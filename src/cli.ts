@@ -14,11 +14,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { applyToZCode, type BeautifyConfig } from "./core/inject.js";
 import type { ApplyOptions } from "./core/session.js";
+import type { RegionPatches } from "./core/regions.js";
 import { launchZcode, dataDir } from "./core/launch.js";
 import { applyWallpaper, resetAppearance } from "./core/session.js";
-import { cliEntryPath, getAutostartStatus, installAutostart, uninstallAutostart, type AutostartSpec } from "./core/autostart.js";
-import { RECOVERY_MODES, applyRecoveryMode, normalizeMode, recoveryStatus } from "./core/recovery.js";
-import { repairLaunchers } from "./core/launchers.js";
 
 const USAGE = `zcode-beautify <command> [options]
 
@@ -30,22 +28,27 @@ Commands:
     --fit <mode>                 cover | contain | smart (default cover)
     --no-monet                   Keep ZCode's original colors
     --port <N>                   CDP port (default 9222)
+  apply-scene <pkg-or-dir> [options]
+                                 Import a Wallpaper Engine scene wallpaper,
+                                 render it to a seamless loop and apply it.
+                                 Accepts the same flags as 'apply'. Requires
+                                 Wallpaper Engine + ffmpeg 5+; a running
+                                 'serve' is needed for motion (otherwise the
+                                 poster frame is applied).
   colors [--port N]              Re-apply stored theme without wallpaper change
+  region <id> [options]          Tune one layout region's blur/dim
+    --blur <px>                  Blur for this region (0 = sharp)
+    --dim <0-100>                Darken this region
+    --selector <css>             Region container selector (override auto-detect)
+    --reset                      Drop this region's overrides, follow the global
+                                 ids: sidebar | main | terminal | sidepanel
   reset [--port N]               Remove wallpaper and color overrides
   status [--port N]              Show CDP reachability and renderer targets
   watch [--port N]               Watch mode: re-inject whenever ZCode (re)starts
   serve [--port N] [--api-port M] [--detach]
                                  Watch mode + settings panel + local API (default API port 9223)
                                  --detach runs it in the background, outliving this shell
-  recovery [mode]                Restore the theme after ZCode restarts:
-                                 off | on-start (default) | always
-  autostart [install|uninstall]  Start the resident service at sign-in (used by mode "always")
-  repair-launchers [--dry-run]   Add --remote-debugging-port to ZCode launch entries missing it
 `;
-
-function autostartSpec(cdpPort: number, apiPort = 9223): AutostartSpec {
-  return { nodePath: process.execPath, cliPath: cliEntryPath(), cdpPort, apiPort };
-}
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -91,10 +94,75 @@ async function main(): Promise<void> {
         console.log(`Applied wallpaper + theme to ${windows} window(s).`);
         break;
       }
+      case "apply-scene": {
+        const scenePath = rest.find((a) => !a.startsWith("--"));
+        if (!scenePath) {
+          console.error(USAGE);
+          process.exitCode = 1;
+          return;
+        }
+        const { applySceneWallpaper } = await import("./core/session.js");
+        const { windows, served, scene } = await applySceneWallpaper(scenePath, {
+          port,
+          blur: Number(flag("--blur") ?? 0),
+          dim: Number(flag("--dim") ?? 25),
+          monet: !has("--no-monet"),
+          fit: flag("--fit") as ApplyOptions["fit"],
+          onProgress: (stage, detail) => console.log(`  [${stage}]${detail ? ` ${detail}` : ""}`),
+        });
+        console.log(`Scene ${scene.fromCache ? "loaded from cache" : "imported"} (${scene.hash.slice(0, 8)}) and applied to ${windows} window(s).`);
+        if (!served) {
+          console.log("Motion requires the serve media endpoint: run `zcode-beautify serve --detach`, then `zcode-beautify colors`.");
+        }
+        break;
+      }
       case "colors": {
         const { applyColorsOnly } = await import("./core/session.js");
         const windows = await applyColorsOnly({ port });
         console.log(`Re-applied theme to ${windows} window(s).`);
+        break;
+      }
+      case "region": {
+        const { isRegionId, REGION_IDS } = await import("./core/regions.js");
+        const id = rest.find((a) => !a.startsWith("--"));
+        if (!isRegionId(id)) {
+          console.error(`region requires one of: ${REGION_IDS.join(" | ")}`);
+          process.exitCode = 1;
+          return;
+        }
+        const reset = has("--reset");
+        const patch: RegionPatches = {};
+        if (reset) {
+          patch[id] = { blur: null, dim: null, selector: null };
+        } else {
+          const entry: NonNullable<RegionPatches[typeof id]> = {};
+          for (const field of ["blur", "dim"] as const) {
+            const raw = flag(`--${field}`);
+            if (raw === undefined) continue;
+            const value = Number(raw);
+            if (!Number.isFinite(value) || value < 0 || value > 100) {
+              console.error(`--${field} must be a number between 0 and 100`);
+              process.exitCode = 1;
+              return;
+            }
+            entry[field] = value;
+          }
+          const selector = flag("--selector");
+          if (selector !== undefined) entry.selector = selector;
+          if (Object.keys(entry).length === 0) {
+            console.error("region needs at least one of --blur, --dim, --selector, or --reset");
+            process.exitCode = 1;
+            return;
+          }
+          patch[id] = entry;
+        }
+        const { applyColorsOnly } = await import("./core/session.js");
+        const windows = await applyColorsOnly({ port, regions: patch });
+        console.log(
+          reset
+            ? `Region "${id}" back on the global values; applied to ${windows} window(s).`
+            : `Region "${id}" updated and applied to ${windows} window(s).`,
+        );
         break;
       }
       case "reset": {
@@ -110,11 +178,6 @@ async function main(): Promise<void> {
           for (const t of targets) console.log(`  - [${t.id}] ${t.title} ${t.url}`);
         } catch (err) {
           console.log(`CDP not reachable on port ${port}: ${(err as Error).message}`);
-          console.log(
-            `If ZCode is running, it was probably started from an entry that lacks the debug flag.\n` +
-              `Run \`zcode-beautify repair-launchers\` (add --dry-run to preview) to fix every entry,\n` +
-              `then quit ZCode completely and start it from one of the fixed shortcuts.`
-          );
           process.exitCode = 1;
         }
         break;
@@ -131,69 +194,6 @@ async function main(): Promise<void> {
         }
         const { startServe } = await import("./core/server.js");
         await startServe({ cdpPort: port, apiPort });
-        break;
-      }
-      case "recovery": {
-        const wanted = normalizeMode(rest[0]);
-        if (rest[0] !== undefined && wanted === undefined) {
-          console.error(`Unknown recovery mode "${rest[0]}". Use one of: ${RECOVERY_MODES.join(", ")}.`);
-          process.exitCode = 1;
-          break;
-        }
-        if (wanted) {
-          const status = applyRecoveryMode(wanted, autostartSpec(port));
-          console.log(`Recovery mode set to "${wanted}".`);
-          if (wanted === "always") {
-            console.log(
-              status.autostart.installed
-                ? `Autostart entry written to ${status.autostart.entryPath} (active from the next sign-in).`
-                : `Could not register autostart${status.autostart.note ? `: ${status.autostart.note}` : ""}.`
-            );
-          } else if (status.autostart.installed === false) {
-            console.log("Autostart entry removed.");
-          }
-          console.log(JSON.stringify(status, null, 2));
-          break;
-        }
-        console.log(JSON.stringify(recoveryStatus(), null, 2));
-        break;
-      }
-      case "autostart": {
-        const apiPort = Number(flag("--api-port") ?? 9223);
-        const action = rest[0] ?? "status";
-        if (action === "install") {
-          const status = installAutostart(autostartSpec(port, apiPort));
-          if (!status.supported) {
-            console.error(`Autostart is not supported on ${status.platform}.`);
-            process.exitCode = 1;
-            break;
-          }
-          console.log(`Autostart entry written to ${status.entryPath} (active from the next sign-in).`);
-        } else if (action === "uninstall") {
-          const before = getAutostartStatus();
-          uninstallAutostart();
-          console.log(before.installed ? "Autostart entry removed." : "No autostart entry was installed.");
-        } else {
-          console.log(JSON.stringify(getAutostartStatus(), null, 2));
-        }
-        break;
-      }
-      case "repair-launchers": {
-        const report = await repairLaunchers({ port, dryRun: has("--dry-run") });
-        if (report.error) {
-          console.error(report.error);
-          process.exitCode = 1;
-          break;
-        }
-        for (const f of report.fixes) {
-          console.log(`[${f.status}] ${f.path}${f.reason ? ` — ${f.reason}` : ""}`);
-        }
-        const updated = report.fixes.filter((f) => f.status === "updated").length;
-        console.log(
-          report.dryRun
-            ? `${updated} of ${report.fixes.length} entry(ies) would be updated.`
-            : `${updated} of ${report.fixes.length} entry(ies) updated.`
-        );
         break;
       }
       case "help":

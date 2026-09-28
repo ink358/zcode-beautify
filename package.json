@@ -1,7 +1,7 @@
 {
   "name": "zcode-beautify",
-  "version": "0.3.3",
-  "description": "Open-source beautification plugin for the ZCode desktop client: custom wallpaper + Material Design 3 (Monet) dynamic theming via CDP injection, with a live settings panel.",
+  "version": "0.4.0",
+  "description": "Open-source beautification plugin for the ZCode desktop client: dynamic wallpapers (Wallpaper Engine scenes / videos) as seamless looping backgrounds + Material Design 3 (Monet) dynamic theming via CDP injection, with a live settings panel.",
   "type": "module",
   "license": "MIT",
   "author": "Logocceai",
@@ -44,6 +44,7 @@
     "@types/node": "^22.0.0",
     "adm-zip": "^0.6.1",
     "esbuild": "^0.28.2",
+    "tsx": "^4.23.13",
     "typescript": "^5.6.0"
   },
   "repository": {

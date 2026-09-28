@@ -79,9 +79,7 @@ async function isProcessRunning(exePath) {
   const name = exePath.split(/[\\/]/).pop();
   try {
     if (process.platform === "win32") {
-      const { stdout } = await execFileAsync("tasklist", ["/NH", "/FI", `IMAGENAME eq ${name}`], {
-        windowsHide: true,
-      });
+      const { stdout } = await execFileAsync("tasklist", ["/NH", "/FI", `IMAGENAME eq ${name}`]);
       return stdout.toLowerCase().includes(name.toLowerCase());
     }
     const { stdout } = await execFileAsync("pgrep", ["-x", name.replace(/\.exe$/i, "")]);

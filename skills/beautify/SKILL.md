@@ -13,7 +13,29 @@ modifies ZCode's installation files.
 
 - "把这张图设为 ZCode 背景" / "set this image as the ZCode background"
 - "换个主题颜色" / "make the UI match my wallpaper"
+- "终端虚化但侧边栏保持清晰" / "blur the terminal but keep the sidebar sharp"
 - "恢复默认外观" / "reset the appearance"
+
+## Per-region blur and dim
+
+Blur and dim can be set for the whole window or for one layout region —
+`sidebar`, `main`, `terminal`, `sidepanel` — independently:
+
+- Pass `regions` to `apply_options`, e.g.
+  `regions: { terminal: { blur: 24, dim: 10 }, sidebar: { blur: 0 } }`.
+  Only the fields you send change; a region left out keeps following the global
+  values, and an explicit `null` puts a field back on them.
+- `blur` and `dim` are absolute values for that region, not deltas: `blur: 0`
+  makes a region perfectly sharp even when the global blur is high.
+- Regions are located through ZCode's own layout hooks
+  (`[data-workspace-sidebar-panel]`, `[data-workspace-conversation-frame]`,
+  `[data-workspace-terminal-frame]`, `[data-workspace-side-frame]`). If ZCode
+  changes its shell, `selector` overrides the hook for that region — but the
+  user has to pick the element in the panel (`⌖ 拾取元素`), since only the
+  renderer can see the live DOM. Prefer telling them to use the panel over
+  guessing a selector.
+- The panel has the same controls under 调节目标 (global / region chips) with a
+  live preview; use the tools when the user asks in chat.
 
 ## Workflow
 
@@ -23,58 +45,40 @@ modifies ZCode's installation files.
    source color, generates light/dark schemes, and injects everything into the
    running ZCode renderer.
 3. **On CDP/port errors**: the ZCode instance is running without the debug
-   port. Run `repair_launchers` first — it appends `--remote-debugging-port` to
-   every launch entry missing it (desktop, Start Menu, pinned taskbar, the
-   `zcode://` handler, the context-menu verbs), so a normal start opens the port
-   from then on. Then have the user quit ZCode completely and start it again;
-   the flag cannot be added to an instance that is already running. Expect to
-   repeat this over time: ZCode's updater rebuilds the Start Menu shortcut
-   without the flag, and the app re-registers its protocol / context-menu
-   registry entries on every start. In `on-start` mode the plugin performs this
-   repair by itself at startup whenever the port is unreachable.
+   port. Instruct the user to quit ZCode completely and start it via
+   `node <plugin-root>/dist/cli.js launch`, or via watch mode:
+   `node <plugin-root>/dist/cli.js watch` (keeps re-injecting across restarts).
 4. **Fine-tune with `apply_options`** (blur / dim / monet / wallpaper_visible /
    fit) when the user wants adjustments — it does not need the image path
    again. `fit` picks the framing: `cover` fills and crops, `contain`
    letterboxes over a blurred backdrop, `smart` analyzes the picture locally
    and picks framing + focus automatically.
-5. **After ZCode restarts**, the injected theme is gone — the renderer that held
-   it no longer exists. `recovery_status` reports which mechanism is in charge:
-   `on-start` (default) restores it automatically once ZCode is up, `always`
-   keeps a resident service doing it, `off` leaves it to the user. Change it with
-   `set_recovery_mode`. Either way `refresh_theme` forces a re-injection now.
+5. **After ZCode restarts**, the injected theme is gone until re-injected — use
+   the `refresh_theme` tool or run watch mode.
 6. **To undo everything**, use `reset_appearance`.
-7. **Recommend the settings panel** for an interactive experience: a draggable
-   panel inside ZCode with blur/dim sliders, Monet toggle, wallpaper swap and
-   reset. It needs the resident service, so either set the recovery mode to
-   `always` (which starts it and registers the autostart entry) or run
-   `node <plugin-root>/dist/cli.js serve --detach` once. `--detach` matters — a
-   foreground `serve` is reaped with the shell or agent session that spawned it,
-   and the panel then shows its ⚠ offline banner. Never start a second `serve`:
-   it refuses to start and names the pid holding the port. If the panel reports
-   itself offline, run `serve --detach` rather than assuming the stored config
-   is empty — an offline panel deliberately zeroes its controls.
+7. **Recommend `node <plugin-root>/dist/cli.js serve --detach`** for an
+   interactive experience: it keeps the theme alive and shows a draggable
+   settings panel inside ZCode (blur/dim sliders, Monet toggle, wallpaper swap,
+   reset). `--detach` matters — a foreground `serve` is reaped with the shell or
+   agent session that spawned it, and the panel then shows its ⚠ offline banner.
+   Never start a second `serve`: it refuses to start and names the pid holding
+   the port. If the panel reports itself offline, run `serve --detach` rather
+   than assuming the stored config is empty — an offline panel deliberately
+   zeroes its controls.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
 | `set_background` | Set wallpaper + Monet colors |
-| `apply_options` | Tune blur/dim/monet/wallpaper visibility/framing without changing the image |
+| `apply_options` | Tune blur/dim/monet/wallpaper visibility/framing without changing the image — including per-region blur/dim through `regions` |
 | `refresh_theme` | Re-inject stored theme after a restart |
 | `reset_appearance` | Remove wallpaper and overrides |
 | `beautify_status` | Show stored config |
-| `recovery_status` | Report the recovery mode, autostart entry and CDP reachability |
-| `set_recovery_mode` | Switch between `off` / `on-start` / `always` |
-| `repair_launchers` | Add the debug-port flag to every launch entry missing it; re-run after ZCode updates |
 
 ## Constraints
 
-- ZCode must be running (or startable) with `--remote-debugging-port=9222`. The
-  flag can only come from the launcher — `repair_launchers` writes it into the
-  shortcuts and protocol handlers, and machine-wide entries need admin rights.
-  Shortcuts are the durable entries; ZCode's updater rebuilds the Start Menu one
-  and the app re-registers its registry handlers, so both can lose the flag
-  again.
-- The injected theme lives in the renderer and is wiped when ZCode restarts. The
-  recovery mode decides who puts it back; `refresh_theme` forces it.
+- ZCode must be running (or startable) with `--remote-debugging-port=9222`.
+- Themes live in CDP sessions: they are wiped when ZCode restarts. Watch mode
+  makes re-injection automatic.
 - Functional colors (success/warning/destructive) are intentionally preserved.

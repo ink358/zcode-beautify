@@ -3,42 +3,106 @@
  * the model can set a wallpaper / re-theme / reset on the user's behalf.
  */
 
-import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
+import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { applyColorsOnly, applyWallpaper, reapplyStored, resetAppearance } from "../core/session.js";
+import { applyColorsOnly, applyWallpaper, applySceneWallpaper, reapplyStored, resetAppearance } from "../core/session.js";
+import type { RegionPatches } from "../core/regions.js";
+import { detectWallpaperType } from "../core/wallpaperType.js";
 import { loadConfig } from "../core/launch.js";
-import { DEFAULT_CONFIG } from "../core/inject.js";
-import { listTargets, pickRendererTargets } from "../core/cdp.js";
-import { getAutostartStatus, installAutostart, uninstallAutostart } from "../core/autostart.js";
-import { loadRecovery, setRecoveryMode } from "../core/recovery.js";
-import { repairLaunchers } from "../core/launchers.js";
 
-// Substituted at bundle time by scripts/bundle.mjs from package.json.
-declare const __PLUGIN_VERSION__: string;
+/**
+ * ZCode launches this MCP server on every app start — the ideal hook to make
+ * the settings panel "just exist": piggyback a detached `serve` process so it
+ * injects the panel as soon as the renderer is up. Idempotent (a healthy
+ * serve on the API port is left alone) and strictly fire-and-forget: a slow
+ * or failed bootstrap must never delay or break MCP startup.
+ */
+function bootstrapServe(): void {
+  try {
+    const serverFile = path.resolve(process.argv[1] ?? "");
+    // Only from the bundled layout (dist/mcp/server.js → dist/cli.js); under
+    // tsx from src/ there is nothing to point at, so skip quietly.
+    const cliJs = path.join(path.dirname(serverFile), "..", "cli.js");
+    if (path.basename(serverFile) !== "server.js" || !existsSync(cliJs)) return;
+    fetch("http://127.0.0.1:9223/api/health", { signal: AbortSignal.timeout(1500) })
+      .then((r) => r.json())
+      .then((body) => {
+        if ((body as { service?: string })?.service !== "zcode-beautify") throw new Error("foreign service");
+      })
+      .catch(() => {
+        try {
+          // ZCode launches MCP servers with ZCODE_BEAUTIFY_DATA_DIR pointed at
+          // a plugin-scoped directory (<plugin>@<marketplace>); letting the
+          // serve inherit it splits the store from manually-started serves
+          // (empty-looking library). Strip it so every serve uses the default
+          // data dir.
+          const childEnv = { ...process.env };
+          delete childEnv.ZCODE_BEAUTIFY_DATA_DIR;
+          spawn(process.execPath, [cliJs, "serve", "--detach"], {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+            env: childEnv,
+          }).unref();
+        } catch {
+          /* best effort */
+        }
+      });
+  } catch {
+    /* best effort */
+  }
+}
+bootstrapServe();
 
 const server = new McpServer({
   name: "zcode-beautify",
-  version: __PLUGIN_VERSION__,
+  version: "0.3.0",
 });
+
+/** Registry of the tools this server exposes (used by tests / docs). */
+export const TOOL_NAMES = [
+  "set_background",
+  "import_scene_wallpaper",
+  "apply_options",
+  "refresh_theme",
+  "reset_appearance",
+  "beautify_status",
+] as const;
 
 server.registerTool(
   "set_background",
   {
     title: "Set ZCode wallpaper",
     description:
-      "Set the ZCode desktop client's background wallpaper image and adapt the UI colors with Material Design 3 (Monet) dynamic color. ZCode must be running with the CDP debug port (see zcode-beautify launch).",
+      "Set the ZCode desktop client's background wallpaper image and adapt the UI colors with Material Design 3 (Monet) dynamic color. Accepts a static image OR a Wallpaper Engine scene wallpaper (.pkg / workshop directory) — scene inputs are rendered, recorded and looped automatically. ZCode must be running with the CDP debug port (see zcode-beautify launch).",
     inputSchema: {
-      image_path: z.string().describe("Absolute path of the image to use as wallpaper"),
+      image_path: z.string().describe("Absolute path of the image, .pkg file, or scene directory to use as wallpaper"),
       blur: z.number().min(0).max(100).optional().describe("Wallpaper blur radius in px (default 0)"),
       dim: z.number().min(0).max(100).optional().describe("Wallpaper darkening 0-100 (default 25)"),
     },
   },
   async ({ image_path, blur, dim }) => {
     try {
-      const { windows } = await applyWallpaper(image_path, { blur, dim });
-      return { content: [{ type: "text", text: `Wallpaper applied to ${windows} window(s) with Monet-adapted colors.` }] };
+      const kind = detectWallpaperType(image_path);
+      const { windows } =
+        kind === "scene" || kind === "video"
+          ? await applySceneWallpaper(image_path, { blur, dim })
+          : await applyWallpaper(image_path, { blur, dim });
+      return {
+        content: [{
+          type: "text",
+          text:
+            kind === "scene"
+              ? `Scene wallpaper imported and applied to ${windows} window(s). First import renders in real time; later imports are served from cache.`
+              : kind === "video"
+                ? `Video wallpaper imported (trimmed and looped) and applied to ${windows} window(s).`
+                : `Wallpaper applied to ${windows} window(s) with Monet-adapted colors.`,
+        }],
+      };
     } catch (err) {
       return { content: [{ type: "text", text: `Failed: ${(err as Error).message}` }], isError: true };
     }
@@ -46,22 +110,96 @@ server.registerTool(
 );
 
 server.registerTool(
+  "import_scene_wallpaper",
+  {
+    title: "Import scene wallpaper",
+    description:
+      "Import a Wallpaper Engine scene wallpaper (.pkg file or extracted workshop directory) as an animated ZCode wallpaper: opens it in a Wallpaper Engine window, records ~15s with ffmpeg, processes it into a perfectly seamless loop, caches it, and applies it with Monet colors from a poster frame. Requires Wallpaper Engine and ffmpeg 5+ locally.",
+    inputSchema: {
+      path: z.string().describe("Absolute path of the .pkg file or the scene directory (project.json folder)"),
+      blur: z.number().min(0).max(100).optional().describe("Wallpaper blur radius in px"),
+      dim: z.number().min(0).max(100).optional().describe("Wallpaper darkening 0-100"),
+    },
+  },
+  async ({ path: scenePath, blur, dim }) => {
+    try {
+      const stages: string[] = [];
+      const { windows, served, scene } = await applySceneWallpaper(scenePath, {
+        blur,
+        dim,
+        onProgress: (stage) => {
+          if (stages[stages.length - 1] !== stage) stages.push(stage);
+        },
+      });
+      const notes = served
+        ? "Loop is streaming from the serve media endpoint."
+        : "serve is not running: the poster frame is applied as a static wallpaper. Run `zcode-beautify serve --detach`, then `refresh_theme`, to get motion.";
+      return {
+        content: [{
+          type: "text",
+          text: `Scene imported (${scene.fromCache ? "cache hit" : "freshly rendered"}, ${Math.round(statSizeMb(scene.loopPath))} MB) and applied to ${windows} window(s). Stages: ${stages.join(" → ")}. ${notes}`,
+        }],
+      };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Failed: ${(err as Error).message}` }], isError: true };
+    }
+  }
+);
+
+function statSizeMb(file: string): number {
+  try {
+    return statSync(file).size / 1024 / 1024;
+  } catch {
+    return 0;
+  }
+}
+
+/** One region's override; null on a field puts it back on the global value. */
+const regionSchema = z
+  .object({
+    blur: z.number().min(0).max(100).nullable().optional().describe("Blur in px for this region, or null to follow the global blur"),
+    dim: z.number().min(0).max(100).nullable().optional().describe("Dim 0-100 for this region, or null to follow the global dim"),
+    selector: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("CSS selector of the region container, or null for the built-in ZCode layout hook"),
+  })
+  .describe("Blur/dim for one layout region");
+
+server.registerTool(
   "apply_options",
   {
     title: "Tune ZCode appearance",
     description:
-      "Adjust the live ZCode appearance without changing the wallpaper: blur radius, dim level, Monet dynamic colors on/off, and wallpaper visibility (translucent vs opaque surfaces). Only the provided values change; the rest keep their current setting.",
+      "Adjust the live ZCode appearance without changing the wallpaper: blur radius, dim level, Monet dynamic colors on/off, and wallpaper visibility (translucent vs opaque surfaces). Blur and dim can also be set per layout region — sidebar, main, terminal, sidepanel — so one area of the window differs from the rest; a region left out follows the global values, and an explicit null puts it back on them. Only the provided values change.",
     inputSchema: {
       blur: z.number().min(0).max(100).optional().describe("Wallpaper blur radius in px"),
       dim: z.number().min(0).max(100).optional().describe("Wallpaper darkening 0-100"),
       monet: z.boolean().optional().describe("Regenerate UI colors from the wallpaper (true) or keep ZCode's original colors (false)"),
       wallpaper_visible: z.boolean().optional().describe("Translucent surfaces showing the wallpaper (true) or opaque surfaces (false)"),
       fit: z.enum(["cover", "contain", "smart"]).optional().describe("Framing: cover fills and crops, contain letterboxes with a blurred backdrop, smart analyzes the picture locally and picks the best framing + focus point"),
+      regions: z
+        .object({
+          sidebar: regionSchema.optional(),
+          main: regionSchema.optional(),
+          terminal: regionSchema.optional(),
+          sidepanel: regionSchema.optional(),
+        })
+        .optional()
+        .describe("Per-region blur/dim overrides, merged over the stored ones"),
     },
   },
-  async ({ blur, dim, monet, wallpaper_visible, fit }) => {
+  async ({ blur, dim, monet, wallpaper_visible, fit, regions }) => {
     try {
-      const windows = await applyColorsOnly({ blur, dim, monet, wallpaperVisible: wallpaper_visible, fit });
+      const windows = await applyColorsOnly({
+        blur,
+        dim,
+        monet,
+        wallpaperVisible: wallpaper_visible,
+        fit,
+        regions: regions as RegionPatches | undefined,
+      });
       return { content: [{ type: "text", text: `Appearance updated in ${windows} window(s).` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Failed: ${(err as Error).message}` }], isError: true };
@@ -116,185 +254,4 @@ server.registerTool(
   }
 );
 
-server.registerTool(
-  "recovery_status",
-  {
-    title: "How the theme comes back",
-    description:
-      "Report what happens to the wallpaper and colors after ZCode restarts, whether the autostart entry is in place, " +
-      "and whether the CDP port is currently reachable.",
-    inputSchema: {},
-  },
-  async () => {
-    const stored = loadConfig();
-    const port = stored.port ?? DEFAULT_CONFIG.port;
-    const autostart = getAutostartStatus();
-
-    let cdp: { reachable: boolean; renderers: number; error?: string };
-    try {
-      const targets = pickRendererTargets(await listTargets(port));
-      cdp = { reachable: true, renderers: targets.length };
-    } catch (err) {
-      cdp = { reachable: false, renderers: 0, error: (err as Error).message };
-    }
-
-    const report = {
-      mode: loadRecovery().mode,
-      modes: {
-        off: "nothing automatic; re-apply manually with /beautify",
-        "on-start": "the MCP host restores the theme once when ZCode starts — no resident process",
-        always: "an autostarted service keeps the theme and the settings panel alive (costs ~60 MB)",
-      },
-      autostart: {
-        supported: autostart.supported,
-        installed: autostart.installed,
-        entry: autostart.entryPath,
-        note: autostart.note,
-      },
-      cdp,
-      theme: {
-        wallpaperSet: Boolean(stored.wallpaperPath),
-        blur: stored.blur,
-        dim: stored.dim,
-        monet: stored.monet,
-        fit: stored.fit,
-      },
-    };
-    return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
-  }
-);
-
-server.registerTool(
-  "set_recovery_mode",
-  {
-    title: "Choose how the theme is restored",
-    description:
-      "The injected theme is lost every time ZCode restarts, so pick who brings it back. " +
-      "'off': nothing automatic. 'on-start' (default): restore once when ZCode starts, no resident process. " +
-      "'always': also install an autostart entry for the resident service, so the theme AND the settings panel stay " +
-      "available at the cost of a background node process (~60 MB, 0.3% of one core). Setting 'always' registers the " +
-      "autostart entry; any other mode removes it.",
-    inputSchema: {
-      mode: z.enum(["off", "on-start", "always"]).describe("Recovery mode to store"),
-    },
-  },
-  async ({ mode }) => {
-    const stored = loadConfig();
-    const cdpPort = stored.port ?? DEFAULT_CONFIG.port;
-    setRecoveryMode(mode);
-
-    let note = "";
-    if (mode === "always") {
-      const cliPath = fileURLToPath(new URL("../cli.js", import.meta.url));
-      const status = installAutostart({ nodePath: process.execPath, cliPath, cdpPort, apiPort: 9223 });
-      note = status.installed
-        ? ` Autostart registered at ${status.entryPath} (it takes effect from the next sign-in).`
-        : ` Could not register autostart${status.note ? `: ${status.note}` : ""}.`;
-    } else if (getAutostartStatus().installed) {
-      uninstallAutostart();
-      note = " Removed the autostart entry.";
-    }
-    return { content: [{ type: "text", text: `Recovery mode is now "${mode}".${note}` }] };
-  }
-);
-
-server.registerTool(
-  "repair_launchers",
-  {
-    title: "Fix ZCode launch entries",
-    description:
-      "ZCode only opens its CDP port when it is started with --remote-debugging-port, and that flag has to come from the " +
-      "shortcut or handler that launches it. A machine usually has several launch entries and only some carry the flag. " +
-      "This scans the desktop, Start Menu and pinned-taskbar shortcuts plus the zcode:// protocol and Explorer context-menu " +
-      "verbs, and adds the flag where it is missing. Machine-wide entries that need administrator rights are reported, not " +
-      "modified. Shortcuts are the durable entries: ZCode's updater rebuilds the Start Menu shortcut without the flag, and " +
-      "the app re-registers its protocol and context-menu handlers on every start, so registry entries may need repairing again.",
-    inputSchema: {
-      dry_run: z.boolean().optional().describe("Only report what would change; write nothing"),
-    },
-  },
-  async ({ dry_run }) => {
-    const stored = loadConfig();
-    const port = stored.port ?? DEFAULT_CONFIG.port;
-    const report = await repairLaunchers({ port, dryRun: dry_run });
-
-    if (report.error) {
-      return { content: [{ type: "text", text: `Could not scan launch entries: ${report.error}` }], isError: true };
-    }
-
-    const updated = report.fixes.filter((f) => f.status === "updated");
-    const failed = report.fixes.filter((f) => f.status === "failed");
-    const lines = [
-      report.dryRun
-        ? `Dry run on port ${port}: ${updated.length} of ${report.fixes.length} entry(ies) would be updated.`
-        : `Updated ${updated.length} of ${report.fixes.length} launch entry(ies) to include --remote-debugging-port=${port}.`,
-      ...report.fixes.map((f) => `  [${f.status}] ${f.path}${f.reason ? ` — ${f.reason}` : ""}`),
-    ];
-    if (failed.length > 0) {
-      lines.push(
-        "Entries marked failed are machine-wide and need administrator rights; launch ZCode from one of the updated shortcuts instead."
-      );
-    }
-    return { content: [{ type: "text", text: lines.join("\n") }] };
-  }
-);
-
-/**
- * ZCode recreates its renderer on every restart, which drops the injected theme.
- * The plugin host spawns this server right after the app comes up, so it is the
- * one place that can put the theme back without a resident daemon. Runs after
- * the MCP handshake so tool calls are never delayed by it.
- */
-async function restoreAfterStart(): Promise<void> {
-  if (loadRecovery().mode !== "on-start") return;
-  if (!loadConfig().wallpaperPath) return;
-
-  // The renderer may not exist yet when the plugin host first calls us.
-  for (let attempt = 0; attempt < 6; attempt++) {
-    await new Promise((r) => setTimeout(r, attempt === 0 ? 8000 : 5000));
-    try {
-      if ((await reapplyStored()) > 0) return;
-    } catch {
-      /* CDP not up yet, or ZCode started without the debug port */
-    }
-  }
-
-  await repairMissingLauncherFlags();
-}
-
-/**
- * The theme never came back, which usually means ZCode is running without the
- * debug port because its launch entry lost the flag: the app's updater rebuilds
- * the Start Menu shortcut without it, and most third-party launchers start the
- * app through that shortcut. This session cannot be fixed (the running instance
- * read its argv once at startup), but repairing the entries now means the next
- * start is clean — the same repair `repair-launchers` does by hand, just
- * automatic. Fail-soft: it runs in the MCP host, so problems go to stderr (the
- * plugin log) and never to stdout, which carries the MCP protocol.
- */
-async function repairMissingLauncherFlags(): Promise<void> {
-  const port = loadConfig().port ?? DEFAULT_CONFIG.port;
-  try {
-    const report = await repairLaunchers({ port });
-    if (report.error) {
-      console.error(`launcher check failed: ${report.error}`);
-      return;
-    }
-    const updated = report.fixes.filter((f) => f.status === "updated");
-    if (updated.length === 0) {
-      console.error(
-        `CDP port ${port} is unreachable but every launch entry already carries the flag — ` +
-          `ZCode was probably started from an entry that was not repaired, or not via a shortcut at all.`
-      );
-      return;
-    }
-    console.error(`CDP port ${port} is unreachable; added the missing flag to ${updated.length} launch entry(ies):`);
-    for (const f of updated) console.error(`  ${f.path}`);
-    console.error("Quit ZCode completely and start it from one of these entries to bring the theme back.");
-  } catch (err) {
-    console.error(`launcher check failed: ${(err as Error).message}`);
-  }
-}
-
 await server.connect(new StdioServerTransport());
-void restoreAfterStart();

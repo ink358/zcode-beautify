@@ -12,7 +12,8 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   CdpConnection,
   buildBootstrapScript,
@@ -21,11 +22,14 @@ import {
   pickRendererTargets,
 } from "./cdp.js";
 import { buildPayload, DEFAULT_CONFIG, type BeautifyConfig } from "./inject.js";
+import { effectiveRegions, mergeRegionSettings, sanitizeRegionPatch, DEFAULT_REGION_SELECTORS, REGION_LABELS, REGION_SHORT_LABELS } from "./regions.js";
 import { loadWallpaper, type WallpaperAssets } from "./monet.js";
 import { buildPanelScript } from "../panel/panelScript.js";
-import { dataDir, isZcodeProcessRunning, loadConfig, relaunchZcode, saveConfig } from "./launch.js";
-import { applyRecoveryMode, loadRecovery, normalizeMode } from "./recovery.js";
-import { cliEntryPath, getAutostartStatus } from "./autostart.js";
+import { dataDir, loadConfig, saveConfig } from "./launch.js";
+import { sendMediaFile } from "./media.js";
+import { importScene, MissingDependencyError, type SceneImportResult } from "./scenePipeline.js";
+import { getInstallGuide } from "./dependencyCheck.js";
+import { scenesCacheRoot } from "./cacheManager.js";
 
 const MAX_WALLPAPER_BYTES = 20 * 1024 * 1024;
 const MAX_BODY_BYTES = MAX_WALLPAPER_BYTES + 1024 * 1024;
@@ -41,37 +45,31 @@ interface HeldSession {
   themeScriptId?: string;
 }
 
-/**
- * What the last poll saw. The panel has to tell three situations apart — healthy,
- * "ZCode is running but its debug port is closed", and "ZCode is not running" —
- * because each one asks the user for something different.
- */
-interface RuntimeState {
-  cdpReachable: boolean;
-  rendererCount: number;
-  zcodeRunning: boolean;
-  lastError?: string;
-  updatedAt?: string;
-}
-
-let runtimeState: RuntimeState = { cdpReachable: false, rendererCount: 0, zcodeRunning: false };
-
-/** Walking the process table on every failed poll would be wasteful. */
-let nextProcessProbe = 0;
-
 // One decoded image + extracted theme, reused across slider updates so the
 // panel feels instant. Invalidated whenever the wallpaper file changes.
 let cachedAssets: { file: string; mtimeMs: number; assets: WallpaperAssets } | undefined;
 
-async function getAssets(wallpaperPath?: string): Promise<WallpaperAssets | undefined> {
+async function getAssets(config: BeautifyConfig): Promise<WallpaperAssets | undefined> {
+  const wallpaperPath = config.wallpaperPath;
   if (!wallpaperPath || !fs.existsSync(wallpaperPath)) return undefined;
-  const mtimeMs = fs.statSync(wallpaperPath).mtimeMs;
-  if (cachedAssets?.file === wallpaperPath && cachedAssets.mtimeMs === mtimeMs) {
+  // Scene wallpaper: wallpaperPath is the loop VIDEO — jimp can't decode it.
+  // The poster frame next to the loop carries the Monet source colors.
+  const sourcePath =
+    config.mediaType === "video"
+      ? path.join(path.dirname(wallpaperPath), "poster.jpg")
+      : wallpaperPath;
+  if (!fs.existsSync(sourcePath)) return undefined;
+  const mtimeMs = fs.statSync(sourcePath).mtimeMs;
+  if (cachedAssets?.file === sourcePath && cachedAssets.mtimeMs === mtimeMs) {
     return cachedAssets.assets;
   }
-  const assets = await loadWallpaper(wallpaperPath);
-  cachedAssets = { file: wallpaperPath, mtimeMs, assets };
-  return assets;
+  try {
+    const assets = await loadWallpaper(sourcePath);
+    cachedAssets = { file: sourcePath, mtimeMs, assets };
+    return assets;
+  } catch {
+    return undefined; // undecodable wallpaper: inject without Monet rather than not at all
+  }
 }
 
 function currentConfig(): BeautifyConfig {
@@ -96,6 +94,21 @@ function publicConfig(config: BeautifyConfig) {
     wallpaperSet: Boolean(config.wallpaperPath && fs.existsSync(config.wallpaperPath)),
     hasBackup: hasBackup(),
     cdpPort: config.port,
+    mediaType: config.mediaType ?? "image",
+    sceneHash: config.sceneHash,
+    // The panel renders one row per region and needs the resolved values, which
+    // fields the region owns, and the selector it is bound to.
+    regions: effectiveRegions(config).map((region) => ({
+      id: region.id,
+      label: REGION_LABELS[region.id],
+      shortLabel: REGION_SHORT_LABELS[region.id],
+      defaultSelector: DEFAULT_REGION_SELECTORS[region.id],
+      selector: region.selector,
+      blur: region.blur,
+      dim: region.dim,
+      overridden: region.overridden,
+      own: region.own,
+    })),
   };
 }
 
@@ -109,6 +122,19 @@ function sanitize(body: any): Partial<BeautifyConfig> {
   return out;
 }
 
+// --- scene import job (one at a time; the panel polls for progress) ----------
+
+interface ImportJob {
+  running: boolean;
+  stage: string;
+  detail?: string;
+  error?: string;
+  guide?: string;
+  result?: { loopPath: string; posterPath: string; hash: string; fromCache: boolean };
+}
+
+let importJob: ImportJob = { running: false, stage: "idle" };
+
 // --- injection session management -------------------------------------------
 
 const held = new Map<string, HeldSession>();
@@ -121,54 +147,50 @@ async function registerScript(
   return identifier;
 }
 
+/** Builds the injection script for a config; both the held sessions and the
+ * config push path must produce exactly the same payload. */
+async function bootstrapFor(config: BeautifyConfig): Promise<string> {
+  const assets = await getAssets(config);
+  const payload = buildPayload(config, assets);
+  return buildBootstrapScript({
+    css: payload.css,
+    wallpaperDataUri: payload.wallpaperDataUri,
+    videoSrc: payload.videoSrc,
+    fit: payload.fit,
+    regionIds: payload.regionIds,
+    regionSelectors: payload.regionSelectors,
+    activeRegions: payload.activeRegions,
+    live: payload.live,
+  });
+}
+
 async function holdSession(
   target: { id: string; webSocketDebuggerUrl?: string },
   config: BeautifyConfig,
-  apiPort: number,
-  token: string
+  apiPort: number
 ): Promise<void> {
   if (!target.webSocketDebuggerUrl) return;
   const conn = await CdpConnection.connect(target.webSocketDebuggerUrl);
-  // Anything that fails once the socket is up has to close it: the caller
-  // retries every tick, so a connection dropped on the floor here would leave
-  // one orphaned WebSocket per tick for as long as the failure lasts.
-  try {
-    await conn.send("Page.enable");
-    const session: HeldSession = { conn };
+  await conn.send("Page.enable");
+  const session: HeldSession = { conn };
 
-    const assets = await getAssets(config.wallpaperPath);
-    const payload = buildPayload(config, assets);
-    const bootstrap = buildBootstrapScript({
-      css: payload.css,
-      wallpaperDataUri: payload.wallpaperDataUri,
-      fit: payload.fit,
-    });
-    const { identifier } = await conn.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: bootstrap,
-    });
-    session.themeScriptId = identifier;
-    await conn.send("Runtime.evaluate", { expression: bootstrap, returnByValue: true });
+  const bootstrap = await bootstrapFor(config);
+  const { identifier } = await conn.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: bootstrap,
+  });
+  session.themeScriptId = identifier;
+  await conn.send("Runtime.evaluate", { expression: bootstrap, returnByValue: true });
 
-    const panelScript = buildPanelScript(apiPort, token);
-    await conn.send("Page.addScriptToEvaluateOnNewDocument", { source: panelScript });
-    await conn.send("Runtime.evaluate", { expression: panelScript, returnByValue: true });
+  const panelScript = buildPanelScript(apiPort);
+  await conn.send("Page.addScriptToEvaluateOnNewDocument", { source: panelScript });
+  await conn.send("Runtime.evaluate", { expression: panelScript, returnByValue: true });
 
-    held.set(target.id, session);
-  } catch (err) {
-    conn.close();
-    throw err;
-  }
+  held.set(target.id, session);
 }
 
 /** Re-evaluates the theme bootstrap in every live session after a config change. */
 async function pushConfigToSessions(config: BeautifyConfig): Promise<number> {
-  const assets = await getAssets(config.wallpaperPath);
-  const payload = buildPayload(config, assets);
-  const bootstrap = buildBootstrapScript({
-    css: payload.css,
-    wallpaperDataUri: payload.wallpaperDataUri,
-    fit: payload.fit,
-  });
+  const bootstrap = await bootstrapFor(config);
   let ok = 0;
   for (const [id, session] of held) {
     try {
@@ -188,14 +210,14 @@ async function pushConfigToSessions(config: BeautifyConfig): Promise<number> {
   return ok;
 }
 
-async function poll(config: BeautifyConfig, apiPort: number, token: string): Promise<void> {
+async function poll(config: BeautifyConfig, apiPort: number): Promise<void> {
   try {
     const targets = pickRendererTargets(await listTargets(config.port));
     const current = new Set(targets.map((t) => t.id));
     for (const t of targets) {
       if (!held.has(t.id)) {
         try {
-          await holdSession(t, config, apiPort, token);
+          await holdSession(t, config, apiPort);
           console.log(`serve: panel + theme injected into "${t.title}" (${t.id})`);
         } catch {
           /* retry next tick */
@@ -208,30 +230,8 @@ async function poll(config: BeautifyConfig, apiPort: number, token: string): Pro
         held.delete(id);
       }
     }
-    runtimeState = {
-      cdpReachable: true,
-      rendererCount: targets.length,
-      zcodeRunning: true,
-      updatedAt: new Date().toISOString(),
-    };
-  } catch (err) {
-    // No CDP endpoint: either ZCode is closed, or it is running without the
-    // debug port. Either way the held sockets are dead weight — drop them so a
-    // later restart injects afresh instead of matching a stale target id.
-    for (const [id, session] of held) {
-      session.conn.close();
-      held.delete(id);
-    }
-    if (Date.now() > nextProcessProbe) {
-      nextProcessProbe = Date.now() + 15_000;
-      runtimeState = {
-        cdpReachable: false,
-        rendererCount: 0,
-        zcodeRunning: await isZcodeProcessRunning(),
-        lastError: (err as Error).message,
-        updatedAt: new Date().toISOString(),
-      };
-    }
+  } catch {
+    /* CDP not reachable; keep polling */
   }
 }
 
@@ -251,12 +251,6 @@ function sendJson(res: http.ServerResponse, code: number, body: unknown): void {
   } catch {
     /* response already finished or socket gone */
   }
-}
-
-/** Only the injected panel carries the token; nothing else on the machine has it. */
-function authorized(req: http.IncomingMessage, token: string): boolean {
-  const header = req.headers["x-zb-token"];
-  return typeof header === "string" && header.length > 0 && header === token;
 }
 
 /** True when another `serve` of this plugin already owns the port. */
@@ -301,11 +295,6 @@ const IMAGE_EXT: Record<string, string> = {
 export async function startServe(opts: ServeOptions): Promise<void> {
   const { cdpPort, apiPort } = opts;
 
-  // This API can replace the user's wallpaper and even relaunch ZCode, and it
-  // answers anything that can reach localhost. The token only ever travels
-  // inside the injected panel script, so a random web page cannot drive it.
-  const token = randomBytes(16).toString("hex");
-
   // `serve --port N` must win over the port stored in the config file: reading
   // the merged config alone silently dialed the stored port while still
   // printing the flag's value.
@@ -344,21 +333,21 @@ export async function startServe(opts: ServeOptions): Promise<void> {
         return;
       }
 
-      // /api/health stays open: it identifies the service but exposes nothing,
-      // and the CLI relies on it to detect an already-running instance.
-      if (url.pathname !== "/api/health" && !authorized(req, token)) {
-        sendJson(res, 403, { error: "missing or invalid token" });
-        return;
-      }
-
       if (req.method === "GET" && url.pathname === "/api/config") {
         sendJson(res, 200, publicConfig(runtimeConfig()));
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/config") {
-        const patch = sanitize(JSON.parse(await readBody(req)));
-        const config = { ...runtimeConfig(), ...patch };
+        const body = JSON.parse(await readBody(req));
+        const patch = sanitize(body);
+        const current = runtimeConfig();
+        // Regions merge field by field so the panel can change one slider
+        // without restating the others; an explicit null puts a region back on
+        // the global values.
+        const regionPatch = sanitizeRegionPatch(body?.regions);
+        if (regionPatch) patch.regions = mergeRegionSettings(current.regions, regionPatch);
+        const config = { ...current, ...patch };
         saveConfig(persisted(config));
         const windows = await pushConfigToSessions(config).catch(() => 0);
         sendJson(res, 200, { ok: true, windows, ...publicConfig(config) });
@@ -407,7 +396,7 @@ export async function startServe(opts: ServeOptions): Promise<void> {
             held.delete(id);
           }
         }
-        saveConfig({ ...stored, wallpaperPath: undefined });
+        saveConfig({ ...stored, wallpaperPath: undefined, mediaType: undefined, sceneHash: undefined, sceneVideoUrl: undefined });
         cachedAssets = undefined;
         sendJson(res, 200, { ok: true, hasBackup: true });
         return;
@@ -427,41 +416,208 @@ export async function startServe(opts: ServeOptions): Promise<void> {
         return;
       }
 
-      if (req.method === "GET" && url.pathname === "/api/status") {
-        sendJson(res, 200, {
-          ...runtimeState,
-          recovery: loadRecovery(),
-          autostart: getAutostartStatus(),
-        });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/api/relaunch") {
-        const result = await relaunchZcode(cdpPort);
-        sendJson(res, 200, { ok: true, ...result });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/api/recovery") {
-        const body = JSON.parse(await readBody(req));
-        const mode = normalizeMode(body?.mode);
-        if (!mode) throw new Error("mode must be one of: off, on-start, always");
-        const status = applyRecoveryMode(mode, {
-          nodePath: process.execPath,
-          cliPath: cliEntryPath(),
-          cdpPort,
-          apiPort,
-        });
-        sendJson(res, 200, {
-          ok: true,
-          recovery: { mode: status.mode, updatedAt: status.updatedAt },
-          autostart: status.autostart,
-        });
-        return;
-      }
-
       if (req.method === "GET" && url.pathname === "/api/health") {
         sendJson(res, 200, { ok: true, service: "zcode-beautify", pid: process.pid });
+        return;
+      }
+
+      // --- scene wallpaper import -------------------------------------------
+
+      // Opens a native file dialog and returns the picked path. The panel is
+      // a web page and cannot see absolute paths (browser security), but this
+      // local serve process can — so the dialog lives here.
+      if (req.method === "POST" && url.pathname === "/api/pick-scene") {
+        const picked = await pickFileViaDialog();
+        sendJson(res, 200, { ok: Boolean(picked), path: picked });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/import-scene") {
+        const body = JSON.parse(await readBody(req));
+        const scenePath = typeof body?.path === "string" ? body.path.trim() : "";
+        if (!scenePath) throw new Error("path is required");
+        if (importJob.running) {
+          sendJson(res, 409, { error: "another import is already running", stage: importJob.stage });
+          return;
+        }
+        importJob = { running: true, stage: "starting" };
+        // Fire-and-forget: the panel polls /api/import-status for progress.
+        void importScene(scenePath, (stage, detail) => {
+          importJob.stage = stage;
+          importJob.detail = detail;
+        })
+          .then(async (result: SceneImportResult) => {
+            importJob = {
+              running: false,
+              stage: "done",
+              result: { loopPath: result.loopPath, posterPath: result.posterPath, hash: result.hash, fromCache: result.fromCache },
+            };
+            // Adopt the imported scene as the current wallpaper right away.
+            const config = runtimeConfig();
+            const next: BeautifyConfig = {
+              ...config,
+              mediaType: "video",
+              sceneHash: result.hash,
+              wallpaperPath: result.loopPath,
+              apiPort,
+              sceneVideoUrl: `http://127.0.0.1:${apiPort}/media/scene/${result.hash}.mp4`,
+            };
+            saveConfig(persisted(next));
+            await pushConfigToSessions(next).catch(() => 0);
+          })
+          .catch((err: Error) => {
+            importJob = {
+              running: false,
+              stage: "error",
+              error: err.message,
+              guide: err instanceof MissingDependencyError ? getInstallGuide(err.missing) : undefined,
+            };
+          });
+        sendJson(res, 200, { ok: true, started: true });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/import-status") {
+        sendJson(res, 200, importJob);
+        return;
+      }
+
+      // Apply an item from the library: image by path, scene by cache hash.
+      if (req.method === "POST" && url.pathname === "/api/apply-wallpaper") {
+        const body = JSON.parse(await readBody(req));
+        const config = runtimeConfig();
+        if (typeof body?.hash === "string") {
+          const loopPath = path.join(scenesCacheRoot(), body.hash, "loop.mp4");
+          if (!fs.existsSync(loopPath)) throw new Error("unknown scene hash");
+          const next: BeautifyConfig = {
+            ...config,
+            mediaType: "video",
+            sceneHash: body.hash,
+            wallpaperPath: loopPath,
+            apiPort,
+            sceneVideoUrl: `http://127.0.0.1:${apiPort}/media/scene/${body.hash}.mp4`,
+          };
+          saveConfig(persisted(next));
+          const windows = await pushConfigToSessions(next).catch(() => 0);
+          sendJson(res, 200, { ok: true, windows, ...publicConfig(next) });
+          return;
+        }
+        if (typeof body?.path === "string" && fs.existsSync(body.path)) {
+          const next: BeautifyConfig = {
+            ...config,
+            wallpaperPath: body.path,
+            mediaType: "image",
+            sceneHash: undefined,
+            sceneVideoUrl: undefined,
+          };
+          saveConfig(persisted(next));
+          const windows = await pushConfigToSessions(next).catch(() => 0);
+          sendJson(res, 200, { ok: true, windows, ...publicConfig(next) });
+          return;
+        }
+        throw new Error("provide hash or existing path");
+      }
+
+      // Library listing for the panel: static images + cached scene loops.
+      if (req.method === "GET" && url.pathname === "/api/library") {
+        const images: Array<{ name: string; path: string }> = [];
+        for (const f of fs.readdirSync(dataDir())) {
+          if (/\.(jpe?g|png|webp|bmp)$/i.test(f)) {
+            images.push({ name: f, path: path.join(dataDir(), f) });
+          }
+        }
+        const scenes: Array<{ hash: string; name?: string; sizeBytes: number; mtimeMs: number }> = [];
+        try {
+          for (const d of fs.readdirSync(scenesCacheRoot())) {
+            const loop = path.join(scenesCacheRoot(), d, "loop.mp4");
+            try {
+              const st = fs.statSync(loop);
+              let name: string | undefined;
+              try {
+                name = (JSON.parse(fs.readFileSync(path.join(scenesCacheRoot(), d, "name.json"), "utf8")) as { name?: string }).name;
+              } catch {
+                /* unnamed entry */
+              }
+              scenes.push({ hash: d, name, sizeBytes: st.size, mtimeMs: st.mtimeMs });
+            } catch {
+              /* incomplete entry */
+            }
+          }
+        } catch {
+          /* no scenes dir yet */
+        }
+        scenes.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        sendJson(res, 200, { images, scenes });
+        return;
+      }
+
+      // Rename / delete library entries. Scenes are content-addressed, so a
+      // display name lives in a small sidecar (name.json) and never affects
+      // cache identity; images are plain files inside dataDir.
+      if (req.method === "POST" && url.pathname === "/api/library-rename") {
+        const body = JSON.parse(await readBody(req));
+        const name = typeof body?.name === "string" ? body.name.trim().slice(0, 60) : "";
+        if (!name) throw new Error("name is required");
+        if (name.includes("/") || name.includes("\\") || name.includes("..")) throw new Error("invalid name");
+
+        if (body?.kind === "scene" && typeof body?.hash === "string" && /^[a-f0-9]{8,64}$/.test(body.hash)) {
+          const dir = path.join(scenesCacheRoot(), body.hash);
+          if (!fs.existsSync(dir)) throw new Error("unknown scene hash");
+          fs.writeFileSync(path.join(dir, "name.json"), JSON.stringify({ name }));
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        if (body?.kind === "image" && typeof body?.path === "string") {
+          const oldPath = path.resolve(body.path);
+          const renamed = renameLibraryImage(oldPath, name);
+          if (runtimeConfig().wallpaperPath === oldPath) {
+            saveConfig(persisted({ ...runtimeConfig(), wallpaperPath: renamed }));
+          }
+          sendJson(res, 200, { ok: true, path: renamed });
+          return;
+        }
+        throw new Error("kind must be scene (with hash) or image (with path)");
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/library-delete") {
+        const body = JSON.parse(await readBody(req));
+        const config = runtimeConfig();
+        if (body?.kind === "scene" && typeof body?.hash === "string" && /^[a-f0-9]{8,64}$/.test(body.hash)) {
+          if (config.sceneHash === body.hash) {
+            throw new Error("该壁纸正在使用中 — 先切换到其他壁纸再删除");
+          }
+          const dir = path.join(scenesCacheRoot(), body.hash);
+          if (!fs.existsSync(dir)) throw new Error("unknown scene hash");
+          fs.rmSync(dir, { recursive: true, force: true });
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        if (body?.kind === "image" && typeof body?.path === "string") {
+          const target = path.resolve(body.path);
+          if (config.wallpaperPath === target) {
+            throw new Error("该壁纸正在使用中 — 先切换到其他壁纸再删除");
+          }
+          if (!isInsideDataDir(target) || !/\.(jpe?g|png|webp|bmp)$/i.test(target)) {
+            throw new Error("only plugin-managed wallpapers can be deleted here");
+          }
+          fs.rmSync(target, { force: true });
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        throw new Error("kind must be scene (with hash) or image (with path)");
+      }
+
+      // Loop video streaming for the injected <video> layer (Range-capable).
+      if (req.method === "GET" && url.pathname.startsWith("/media/scene/")) {
+        const hash = /^\/media\/scene\/([a-f0-9]{8,64})\.mp4$/.exec(url.pathname)?.[1];
+        if (!hash) {
+          sendJson(res, 400, { error: "bad scene media path" });
+          return;
+        }
+        const file = path.join(scenesCacheRoot(), hash, "loop.mp4");
+        if (!sendMediaFile(req, res, file)) {
+          sendJson(res, 404, { error: "scene media not found" });
+        }
         return;
       }
 
@@ -486,9 +642,49 @@ export async function startServe(opts: ServeOptions): Promise<void> {
   console.log(`serve: injecting into ZCode renderers on CDP port ${cdpPort}`);
 
   // Initial pass, then keep polling so restarts of the app get re-injected.
-  await poll(runtimeConfig(), apiPort, token);
+  await poll(runtimeConfig(), apiPort);
   for (;;) {
     await new Promise((r) => setTimeout(r, POLL_MS));
-    await poll(runtimeConfig(), apiPort, token);
+    await poll(runtimeConfig(), apiPort);
   }
+}
+
+/**
+ * Native wallpaper file picker, shown from the serve process via PowerShell
+ * WinForms (STA + a topmost owner form so it surfaces above ZCode). The
+ * panel is a web page and cannot read absolute paths from <input type=file>,
+ * so the dialog has to live in this local process. Resolves "" on cancel.
+ */
+async function pickFileViaDialog(): Promise<string> {
+  const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$d = New-Object System.Windows.Forms.OpenFileDialog
+$d.Title = '选择动态壁纸 (场景 .pkg / 视频 .mp4, 或壁纸目录内任意文件)'
+$d.Filter = '动态壁纸 (*.pkg;*.json;*.gif;*.jpg;*.png;*.mp4;*.webm)|*.pkg;*.json;*.gif;*.jpg;*.png;*.mp4;*.webm|所有文件 (*.*)|*.*'
+if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }`;
+  try {
+    const { stdout } = await promisify(execFile)("powershell", ["-STA", "-NoProfile", "-Command", script], { timeout: 300_000, windowsHide: true });
+    return stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
+/** Renames a plugin-managed wallpaper image, keeping its extension. */
+function renameLibraryImage(oldPath: string, name: string): string {
+  if (!isInsideDataDir(oldPath) || !/\.(jpe?g|png|webp|bmp)$/i.test(oldPath)) {
+    throw new Error("only plugin-managed wallpapers can be renamed here");
+  }
+  const ext = path.extname(oldPath);
+  const safe = name.replace(/[\/:*?"<>|]/g, "").trim() || "wallpaper";
+  const newPath = path.join(path.dirname(oldPath), safe + ext);
+  if (newPath !== oldPath) fs.renameSync(oldPath, newPath);
+  return newPath;
+}
+
+function isInsideDataDir(target: string): boolean {
+  const rel = path.relative(path.resolve(dataDir()), path.resolve(target));
+  return rel !== "" && !rel.startsWith("..");
 }

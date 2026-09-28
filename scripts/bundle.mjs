@@ -4,11 +4,8 @@ import { build } from "esbuild";
 import fs from "node:fs";
 import path from "node:path";
 
-const { version } = JSON.parse(fs.readFileSync("package.json", "utf8"));
-
 await build({
   entryPoints: ["dist/cli.js", "dist/mcp/server.js"],
-  define: { __PLUGIN_VERSION__: JSON.stringify(version) },
   outdir: "dist",
   allowOverwrite: true,
   bundle: true,

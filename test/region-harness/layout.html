@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ZCode Beautify — 分区渲染验证</title>
+<style>
+  /* Surfaces mirror the plugin's translucent token overrides (buildTransparencyOverrides). */
+  :root {
+    --color-background: transparent;
+    --color-background-alt: rgba(18,18,22,.62);
+    --color-panel: rgba(18,18,22,.62);
+    --color-sidebar: rgba(18,18,22,.62);
+    --color-surface: rgba(18,18,22,.72);
+    --color-card: rgba(18,18,22,.72);
+    --color-input: rgba(18,18,22,.5);
+    --color-foreground: #e8e8ea;
+    --color-foreground-subtle: #9a9aa2;
+    --color-border: rgba(255,255,255,.14);
+    --workspace-sidebar-panel-width: 260px;
+    --workspace-panel-radius: 10px;
+  }
+  html, body { height: 100%; margin: 0; background: transparent; }
+  body { color: var(--color-foreground); font: 13px/1.5 system-ui, "Segoe UI", sans-serif; overflow: hidden; }
+  .titlebar { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+    background: var(--color-background-alt); border-bottom: 1px solid var(--color-border); }
+  .logo { width: 20px; height: 20px; border-radius: 5px; background: #7aa2f7; }
+  /* data-workspace-shell — the real ZCode root layout node */
+  [data-workspace-shell] { position: relative; display: flex; height: calc(100% - 40px); min-height: 0; width: 100%; overflow: hidden; }
+  [data-workspace-sidebar-panel] { width: var(--workspace-sidebar-panel-width); flex: none; overflow: hidden;
+    background: var(--color-sidebar); border-right: 1px solid var(--color-border); }
+  .convcol { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  [data-workspace-conversation-frame] { position: relative; display: flex; flex-direction: column; flex: 1;
+    min-height: 0; overflow: hidden; background: var(--color-background); }
+  [data-workspace-terminal-frame] { height: 190px; flex: none; overflow: hidden; background: var(--color-background);
+    border-top: 1px solid var(--color-border); }
+  [data-workspace-side-frame] { width: 300px; flex: none; height: 100%; overflow: hidden;
+    background: var(--color-background); border-left: 1px solid var(--color-border); }
+  .row { padding: 8px 14px; }
+  .card { margin: 8px 14px; padding: 10px 12px; border-radius: 8px; background: var(--color-card);
+    border: 1px solid var(--color-border); }
+  .muted { color: var(--color-foreground-subtle); }
+  h3 { margin: 6px 14px; font-size: 13px; }
+  .legend { position: fixed; right: 12px; top: 46px; z-index: 5; padding: 8px 10px; border-radius: 8px;
+    background: rgba(0,0,0,.72); border: 1px solid rgba(255,255,255,.18); font-size: 11px; white-space: pre; }
+</style>
+</head>
+<body>
+  <div class="titlebar"><div class="logo"></div><strong>ZCode</strong><span class="muted">— mock layout for region rendering</span></div>
+  <div data-workspace-shell="true">
+    <div data-workspace-sidebar-panel="true">
+      <div class="row">＋ 新建任务</div>
+      <div class="row">🔍 搜索</div>
+      <div class="row">⚙ 自动化</div>
+      <div class="row">🧩 插件市场</div>
+      <div class="card">已置顶<br><span class="muted">python实践作业</span></div>
+      <div class="card">如何使用 ZCode Beautify<br><span class="muted">default · 4小时</span></div>
+    </div>
+    <div class="convcol">
+      <section data-workspace-conversation-frame="true">
+        <h3>新建任务</h3>
+        <div class="card">三、命令行直接设,不经过对话:<br>
+          <code>node cli.js apply "D:\pictures\wallpaper.jpg" --blur 6 --dim 30</code></div>
+        <div class="card">取景模式有 cover(填满裁剪)、contain(完整显示)、smart(本地分析画面主体自动选取景和焦点)。</div>
+        <div class="card muted">你机器上的当前状态:后台服务其实是活着的。</div>
+      </section>
+      <div data-workspace-terminal-frame="true">
+        <div class="row muted">终端 · PowerShell</div>
+        <div class="row">PS C:\Users\xu\.zcode\workspace\default&gt;</div>
+      </div>
+    </div>
+    <div data-workspace-side-frame="true">
+      <h3>打开标签页</h3>
+      <div class="row muted">选择要在侧边面板中打开的标签。</div>
+      <div class="card">辅助对话</div>
+      <div class="card">审查</div>
+      <div class="card">终端</div>
+      <div class="card">浏览器</div>
+    </div>
+  </div>
+  <div class="legend" id="legend"></div>
+
+<div id="legend"></div>
+<!--INJECT-->
+</body>
+</html>

@@ -18,17 +18,10 @@ export interface StoredConfig extends Partial<Omit<import("./inject.js").Beautif
 }
 
 export function dataDir(): string {
-  const override = process.env.ZCODE_BEAUTIFY_DATA_DIR;
-  if (override) return override;
-
-  const root = path.join(os.homedir(), ".zcode", "cli", "plugins", "data");
-  // ZCode resolves ${ZCODE_PLUGIN_DATA} to "<name>@<marketplace>", so a plugin
-  // install and a manually run CLI would otherwise write two different configs.
-  // Prefer the plugin-scoped directory when it exists.
-  const pluginScoped = path.join(root, "zcode-beautify@zcode-beautify");
-  if (fs.existsSync(pluginScoped)) return pluginScoped;
-
-  return path.join(root, "zcode-beautify");
+  return (
+    process.env.ZCODE_BEAUTIFY_DATA_DIR ??
+    path.join(os.homedir(), ".zcode", "cli", "plugins", "data", "zcode-beautify")
+  );
 }
 
 export function configFile(): string {
@@ -82,12 +75,7 @@ const execFileAsync = promisify(execFile);
 export async function isZcodeProcessRunning(): Promise<boolean> {
   try {
     if (process.platform === "win32") {
-      // This runs from the detached `serve` daemon, which has no console of its
-      // own: without windowsHide Windows allocates a fresh console and the user
-      // sees a black window flash every time the probe fires.
-      const { stdout } = await execFileAsync("tasklist", ["/NH", "/FI", "IMAGENAME eq ZCode.exe"], {
-        windowsHide: true,
-      });
+      const { stdout } = await execFileAsync("tasklist", ["/NH", "/FI", "IMAGENAME eq ZCode.exe"]);
       return stdout.toLowerCase().includes("zcode.exe");
     }
     const name = process.platform === "darwin" ? "ZCode" : "zcode";
@@ -159,38 +147,4 @@ export async function launchZcode(port: number): Promise<LaunchResult> {
     );
   }
   return { started: true };
-}
-
-async function killZcode(): Promise<boolean> {
-  try {
-    if (process.platform === "win32") {
-      await execFileAsync("taskkill", ["/F", "/IM", "ZCode.exe"], { windowsHide: true });
-    } else {
-      await execFileAsync("pkill", ["-x", process.platform === "darwin" ? "ZCode" : "zcode"]);
-    }
-    return true;
-  } catch {
-    return false; // nothing was running
-  }
-}
-
-/**
- * Replaces a running ZCode with a fresh instance that has the CDP port open.
- *
- * `--remote-debugging-port` is read once at process startup, so an instance that
- * came up without it can never grow the port. ZCode keeps its window in the tray
- * (`closeToTrayOnWindows`), which is why closing the window is not enough and
- * the processes have to be terminated outright — callers must ask the user
- * first, since anything unsaved in a conversation is lost.
- */
-export async function relaunchZcode(port: number): Promise<{ killed: boolean; started: boolean }> {
-  const killed = await killZcode();
-
-  // The single-instance lock is released asynchronously.
-  for (let i = 0; i < 20 && (await isZcodeProcessRunning()); i++) {
-    await new Promise((r) => setTimeout(r, 500));
-  }
-
-  const result = await launchZcode(port);
-  return { killed, started: result.started || result.reason === "already-running-with-cdp" };
 }

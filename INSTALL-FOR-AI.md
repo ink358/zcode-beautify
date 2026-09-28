@@ -24,12 +24,11 @@ If they want to beautify a non-ZCode app or develop their own → read
 
 ## What you are installing
 
-`zcode-beautify` v0.3.3 — a ZCode plugin that adds a wallpaper layer +
+`zcode-beautify` v0.2.0 — a ZCode plugin that adds a wallpaper layer +
 Material Design 3 (Monet) dynamic color to the ZCode desktop client over CDP,
 with a `/beautify` slash command, MCP tools (`set_background`, `apply_options`,
-`refresh_theme`, `reset_appearance`, `beautify_status`, `recovery_status`,
-`set_recovery_mode`, `repair_launchers`), and a live settings panel. Everything
-is prebuilt in `dist/` — nothing to compile.
+`refresh_theme`, `reset_appearance`, `beautify_status`), and a live settings
+panel. Everything is prebuilt in `dist/` — nothing to compile.
 
 ## Route A — guide the user through the UI (no shell needed, official path)
 
@@ -87,7 +86,7 @@ everything else.
 4. **Cache the plugin** (what the UI does on "Get"):
    ```text
    from: <clone>/                      (or the staged marketplace copy)
-   to:   ~/.zcode/cli/plugins/cache/zcode-beautify/zcode-beautify/0.3.3/
+   to:   ~/.zcode/cli/plugins/cache/zcode-beautify/zcode-beautify/0.2.0/
    ```
    Read the exact version from `.zcode-plugin/plugin.json` — the folder name
    must equal it.
@@ -106,7 +105,7 @@ everything else.
      "id": "zcode-beautify@zcode-beautify",
      "name": "zcode-beautify",
      "marketplace": "zcode-beautify",
-     "version": "0.3.3",
+     "version": "0.2.0",
      "installPath": "<the cache folder from step 4>",
      "installedAt": "<now, ISO-8601>",
      "updatedAt": "<now, ISO-8601>",
@@ -135,48 +134,27 @@ everything else.
    run `node <plugin-dir>/dist/cli.js launch` (the plugin dir is the cache
    folder above; requires Node.js ≥ 20). Alternatively suggest editing the
    ZCode shortcut to append the flag.
-3. **Make CDP survive restarts — do not skip this.** The debug port can only be
-   supplied by whatever launches ZCode; an instance that is already running can
-   never grow one. Run:
-   ```bash
-   node <plugin-dir>/dist/cli.js repair-launchers
-   ```
-   It scans every launch entry (desktop, Start Menu and pinned-taskbar
-   shortcuts, the `zcode://` protocol handler, the Explorer context-menu verbs)
-   and appends ` --remote-debugging-port=9222` to the ones missing it. Entries
-   that need administrator rights are reported as `failed` and left untouched —
-   launching from one of the updated shortcuts covers the common case. Add
-   `--dry-run` first if you want to show the user what would change.
-   Tell the user two facts for later: ZCode's updater rebuilds the Start Menu
-   shortcut without the flag, and the app re-registers its protocol and
-   context-menu handlers on every start, so both can lose the flag again. Most
-   third-party launchers (Flow Launcher, PowerToys Run, …) start the app through
-   the Start Menu shortcut. The plugin repairs the entries by itself on the next
-   start without the debug port (`on-start` mode), and `repair-launchers` can be
-   re-run by hand any time.
-   Then tell the user: one full restart of ZCode with the flag is required
-   (quit completely — the tray icon counts — and start from an updated entry).
-4. **Ask the user how the theme should come back after a ZCode restart.** The
-   injected wallpaper and colors live in the renderer, so every restart starts
-   from a bare UI and something has to put them back. Present the three modes
-   and let them choose (`node <plugin-dir>/dist/cli.js recovery <mode>`):
-   - `on-start` (default) — the MCP host that ZCode spawns at startup restores
-     the theme once. No resident process, but no settings panel either.
-   - `always` — registers an autostart entry for the resident `serve` daemon, so
-     the theme *and* the settings panel survive a reboot. Costs a background
-     node process (~60 MB, ~0.3% of one core).
-   - `off` — nothing automatic; the user re-applies by hand.
-   The user can change this later from the settings panel, or by asking you to
-   call the `set_recovery_mode` tool.
-5. Then: `/beautify <path-to-an-image>` or `node <plugin-dir>/dist/cli.js apply
-   "image.jpg" --blur 6 --dim 30 --fit smart`.
-   For the live settings panel, start the service with `serve --detach`. Always
-   pass `--detach`: it backgrounds the service so the panel keeps working after
-   the shell (or the agent session) that started it goes away. A foreground
-   `serve` is reaped with its parent, and the panel then reports itself offline.
-   Start it once — a second `serve` refuses to start and prints the pid that
-   already owns the port. Mode `always` handles this automatically.
-6. Verify: CDP reachable (`node <plugin-dir>/dist/cli.js status`), wallpaper
+3. **Make CDP survive restarts — do not skip this.** The injected theme lives
+   in CDP sessions: the moment the user restarts ZCode without the debug port,
+   beautification is gone and they will report "the plugin stopped working".
+   Fix it at the source by persisting the flag into the app's shortcuts:
+   - Locate the app's shortcuts (Desktop, `Start Menu\Programs` for the user
+     and, if present, the all-users one under `C:\ProgramData\...`) and append
+     ` --remote-debugging-port=9222` to the target's arguments
+     (WScript.Shell on Windows: read the `.lnk`, set `Arguments`, `Save()`).
+     The all-users Start Menu needs elevation — a user-level shortcut on the
+     Desktop covers the common case without admin rights.
+   - Warn the user: one full restart of ZCode with the flag is still required
+     once (quit completely, start via the updated shortcut).
+4. Then: `/beautify <path-to-an-image>` or `node <plugin-dir>/dist/cli.js apply
+   "image.jpg" --blur 6 --dim 30 --fit smart`, and
+   `node <plugin-dir>/dist/cli.js serve --detach` for the live settings panel.
+   Always pass `--detach`: it backgrounds the service so the panel keeps working
+   after the shell (or the agent session) that started it goes away. A
+   foreground `serve` is reaped with its parent, and the panel then reports
+   itself offline. Start it once — a second `serve` refuses to start and prints
+   the pid that already owns the port.
+5. Verify: CDP reachable (`node <plugin-dir>/dist/cli.js status`), wallpaper
    visible, `/beautify` available in a new conversation.
 
 ## Uninstall (if the user asks)

@@ -11,11 +11,10 @@
 
 export const PANEL_ROOT_ID = "zcode-beautify-panel-root";
 
-export function buildPanelScript(apiPort: number, token: string): string {
+export function buildPanelScript(apiPort: number): string {
   const api = `http://127.0.0.1:${apiPort}`;
   return `(function(){
   var API = ${JSON.stringify(api)};
-  var TOKEN = ${JSON.stringify(token)};
   var ROOT_ID = ${JSON.stringify(PANEL_ROOT_ID)};
   // Always rebuild: an older panel left in the DOM would otherwise shadow the
   // current script version forever (the old build skipped installation).
@@ -38,7 +37,6 @@ export function buildPanelScript(apiPort: number, token: string): string {
     '#zb-panel[hidden] { display: none; }',
     '#zb-head { padding: 9px 12px; font-weight: 600; cursor: move; border-bottom: 1px solid rgba(255,255,255,.1);',
       ' display: flex; justify-content: space-between; align-items: center; }',
-    '#zb-close { cursor: pointer; opacity: .7; padding: 0 4px; } #zb-close:hover { opacity: 1; }',
     '#zb-body { padding: 10px 12px 0; }',
     '.zb-row { margin-bottom: 10px; }',
     '.zb-row label { display: flex; justify-content: space-between; margin-bottom: 4px; opacity: .85; }',
@@ -50,6 +48,26 @@ export function buildPanelScript(apiPort: number, token: string): string {
       ' background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.14); color: inherit; font-size: 12px; }',
     '.zb-btn:hover { background: rgba(255,255,255,.16); }',
     '#zb-status { min-height: 14px; padding: 2px 12px 0; opacity: .6; font-size: 11px; }',
+    '#zb-scene-path { width: 100%; padding: 5px 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,.14);',
+      ' background: rgba(0,0,0,.3); color: inherit; font-size: 11px; outline: none; }',
+    '#zb-scene-path:focus { border-color: rgba(122,162,247,.6); }',
+    '#zb-progress { position: relative; height: 14px; border-radius: 7px; overflow: hidden;',
+      ' background: rgba(255,255,255,.08); font-size: 10px; line-height: 14px; text-align: center; }',
+    '#zb-progress-bar { position: absolute; inset: 0; width: 0%; background: rgba(122,162,247,.5); transition: width .4s; }',
+    '#zb-progress span { position: relative; }',
+    '#zb-guide { padding: 8px 10px; background: rgba(120,53,15,.55); border-radius: 8px; font-size: 11px;',
+      ' line-height: 1.5; white-space: pre-wrap; user-select: text; max-height: 180px; overflow: auto; }',
+    '.zb-lib { max-height: 120px; overflow: auto; font-size: 11px; }',
+    '.zb-lib .zb-lib-head { opacity: .55; margin: 4px 0 2px; }',
+    '.zb-item { display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 6px; }',
+    '.zb-item:hover { background: rgba(255,255,255,.1); }',
+    '.zb-item[data-current="1"] { background: rgba(122,162,247,.25); }',
+    '.zb-item .zb-label { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+    '.zb-item .zb-label-input { flex: 1; min-width: 0; padding: 1px 4px; border-radius: 4px; border: 1px solid rgba(122,162,247,.6);',
+      ' background: rgba(0,0,0,.35); color: inherit; font-size: 11px; outline: none; }',
+    '.zb-item .zb-act { cursor: pointer; opacity: .5; padding: 0 3px; font-size: 11px; background: none; border: none; color: inherit; }',
+    '.zb-item .zb-act:hover { opacity: 1; }',
+    '.zb-item .zb-act[data-armed="1"] { opacity: 1; color: #f87171; }',
     '#zb-offline { display: flex; flex-direction: column; gap: 6px; align-items: center;',
       ' padding: 10px 12px; background: rgba(120,53,15,.55); font-size: 11px; line-height: 1.5; text-align: center; }',
     '#zb-offline[hidden] { display: none; }',
@@ -59,16 +77,22 @@ export function buildPanelScript(apiPort: number, token: string): string {
     // While offline the controls hold nothing we could read, so they must not
     // look interactive — a slider parked mid-track next to a "0px" label reads
     // as a real (wrong) setting.
+    '.zb-chips { display: flex; gap: 4px; }',
+    '.zb-chip { flex: 1; min-width: 0; position: relative; padding: 4px 0; border-radius: 8px; cursor: pointer;',
+      ' text-align: center; font-size: 11px; color: inherit; background: rgba(255,255,255,.07);',
+      ' border: 1px solid rgba(255,255,255,.12); }',
+    '.zb-chip:hover { background: rgba(255,255,255,.15); }',
+    '.zb-chip[data-on="1"] { background: rgba(122,162,247,.32); border-color: rgba(122,162,247,.7); }',
+    '.zb-chip[data-custom="1"]::after { content: ""; position: absolute; top: 3px; right: 4px;',
+      ' width: 4px; height: 4px; border-radius: 50%; background: #7aa2f7; }',
+    '#zb-region-note { margin-top: 7px; font-size: 10px; line-height: 1.5; opacity: .6; word-break: break-all; }',
+    '#zb-region-note[data-warn="1"] { color: #fbbf24; opacity: 1; }',
+    '#zb-pick-hint { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 2147483647;',
+      ' padding: 8px 14px; border-radius: 8px; font: 12px system-ui, sans-serif; color: #e8e8ea;',
+      ' background: rgba(24,24,30,.94); border: 1px solid rgba(122,162,247,.7); pointer-events: none; }',
     '#zcode-beautify-panel-root[data-offline="1"] #zb-body { opacity: .45; pointer-events: none; }',
     '#zcode-beautify-panel-root[data-offline="1"] #zb-status { display: none; }',
-    '#zcode-beautify-panel-root[data-offline="1"] #zb-fab { border-color: rgba(248,113,113,.7); }',
-    '#zb-needs-relaunch { display: flex; flex-direction: column; gap: 6px; align-items: center;',
-      ' padding: 10px 12px; background: rgba(120,53,15,.45); font-size: 11px; line-height: 1.5; text-align: center; }',
-    '#zb-needs-relaunch[hidden] { display: none; }',
-    '#zb-recovery { width: 100%; padding: 4px 6px; border-radius: 6px; font-size: 11px; color: inherit;',
-      ' background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14); }',
-    '#zb-recovery option { color: #111; }',
-    '#zb-recovery-hint { margin-top: 4px; opacity: .65; font-size: 10px; line-height: 1.45; }'
+    '#zcode-beautify-panel-root[data-offline="1"] #zb-fab { border-color: rgba(248,113,113,.7); }'
   ].join('');
 
   var style = document.createElement('style');
@@ -81,21 +105,26 @@ export function buildPanelScript(apiPort: number, token: string): string {
   root.innerHTML =
     '<div id="zb-fab" title="ZCode Beautify">🎨</div>' +
     '<div id="zb-panel" hidden>' +
-    '  <div id="zb-head"><span>ZCode Beautify</span><span id="zb-close">✕</span></div>' +
+    '  <div id="zb-head"><span>ZCode Beautify</span></div>' +
     '  <div id="zb-offline" hidden>' +
     '    <div>⚠ 美化服务未运行,面板不可用</div>' +
     '    <div class="zb-hint">在插件目录执行 <code>node dist/cli.js serve --detach</code> 启动</div>' +
     '    <button class="zb-btn" id="zb-retry">重试连接</button>' +
     '  </div>' +
-    '  <div id="zb-needs-relaunch" hidden>' +
-    '    <div>⚠ ZCode 美化插件还没生效,需要重启一下 ZCode</div>' +
-    '    <button class="zb-btn" id="zb-relaunch">立即重启 ZCode</button>' +
-    '  </div>' +
     '  <div id="zb-body">' +
-    '    <div class="zb-row"><label title="背景模糊程度(像素)"><span>背景模糊</span><span><span id="zb-blur-val">0</span>px</span></label>' +
+    '    <div class="zb-row"><label title="选择这两个滑块调节的目标:整个窗口,还是某个区域单独设置"><span>调节目标</span></label>' +
+    '      <div class="zb-chips" id="zb-chips"></div></div>' +
+    '    <div class="zb-row"><label title="背景模糊程度(像素)"><span id="zb-blur-label">背景模糊</span><span><span id="zb-blur-val">0</span>px</span></label>' +
     '      <input type="range" id="zb-blur" min="0" max="30" step="1" value="0"></div>' +
-    '    <div class="zb-row"><label title="背景压暗程度(百分比,越高越暗)"><span>背景压暗</span><span><span id="zb-dim-val">0</span>%</span></label>' +
+    '    <div class="zb-row"><label title="背景压暗程度(百分比,越高越暗)"><span id="zb-dim-label">背景压暗</span><span><span id="zb-dim-val">0</span>%</span></label>' +
     '      <input type="range" id="zb-dim" min="0" max="80" step="1" value="0"></div>' +
+    '    <div class="zb-row" id="zb-region-tools" hidden>' +
+    '      <div class="zb-actions">' +
+    '        <button class="zb-btn" id="zb-pick-region" title="在界面中点击该区域,把它的元素记为这个区域的边界(用于 ZCode 改版后自动识别失效的情况)">⌖ 拾取元素</button>' +
+    '        <button class="zb-btn" id="zb-clear-region" title="清除这个区域的单独设置,重新跟随全局">↺ 跟随全局</button>' +
+    '      </div>' +
+    '      <div id="zb-region-note"></div>' +
+    '    </div>' +
     '    <div class="zb-row zb-toggles">' +
     '      <label title="根据壁纸自动生成 UI 配色;关闭则保留 ZCode 原生颜色"><input type="checkbox" id="zb-monet">UI 莫奈取色</label>' +
     '      <label title="显示或隐藏背景壁纸"><input type="checkbox" id="zb-vis">显示壁纸</label>' +
@@ -107,17 +136,21 @@ export function buildPanelScript(apiPort: number, token: string): string {
     '      <label class="zb-btn" for="zb-file" title="选择一张图片作为背景壁纸,UI 配色随之更新">更换图片…</label>' +
     '      <input type="file" id="zb-file" accept="image/*" hidden>' +
     '    </div>' +
+    '    <div class="zb-row"><label style="opacity:.85"><span>动态壁纸 (场景 / 视频)</span></label>' +
+    '      <div class="zb-actions" style="margin:2px 0 6px">' +
+    '        <button class="zb-btn" id="zb-pick" title="打开文件选择器:选 .pkg(场景)或 .mp4(视频),或壁纸目录内任意文件(会自动定位),选完自动开始导入">选择并导入…</button>' +
+    '      </div>' +
+    '      <input type="text" id="zb-scene-path" placeholder="或粘贴 .pkg / .mp4 / 壁纸目录完整路径…" spellcheck="false">' +
+    '      <div class="zb-actions" style="margin-top:6px">' +
+    '        <button class="zb-btn" id="zb-import" title="渲染并录制场景壁纸,生成无缝循环动态背景">导入粘贴的路径</button>' +
+    '      </div>' +
+    '      <div id="zb-progress" hidden><div id="zb-progress-bar"></div><span>…</span></div>' +
+    '      <div id="zb-guide" hidden></div>' +
+    '      <div class="zb-actions" style="margin-top:6px"><button class="zb-btn" id="zb-guide-retry" hidden>已安装,重试</button></div>' +
+    '    </div>' +
+    '    <div class="zb-row zb-lib" id="zb-lib"></div>' +
     '    <div class="zb-row zb-actions">' +
     '      <button class="zb-btn" id="zb-reset" title="移除壁纸与配色,还原 ZCode 默认外观(壁纸会被记住,可再次恢复)">还原默认外观</button>' +
-    '    </div>' +
-    '    <div class="zb-row" style="border-top:1px solid rgba(255,255,255,.1);padding-top:8px">' +
-    '      <label title="ZCode 每次重启都会丢掉壁纸和配色,这里决定由谁来把它们恢复回来"><span>自动恢复</span></label>' +
-    '      <select id="zb-recovery">' +
-    '        <option value="off">关闭</option>' +
-    '        <option value="on-start">ZCode 启动时恢复</option>' +
-    '        <option value="always">后台常驻(可用本面板)</option>' +
-    '      </select>' +
-    '      <div id="zb-recovery-hint"></div>' +
     '    </div>' +
     '  </div>' +
     '</div>' +
@@ -131,41 +164,151 @@ export function buildPanelScript(apiPort: number, token: string): string {
     el.textContent = msg;
     setTimeout(function () { if (el.textContent === msg) el.textContent = ''; }, 2200);
   }
-  function auth(extra) {
-    var h = extra || {};
-    h['x-zb-token'] = TOKEN;
-    return h;
-  }
   function post(path, body, cb) {
-    fetch(API + path, { method: 'POST', headers: auth({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) })
+    fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d && d.error) { status('操作失败: ' + d.error); return; }
-        if (cb) cb(d);
-      })
+      .then(function (d) { if (cb) cb(d); })
       .catch(function () { status('无法连接美化服务 service unreachable'); });
+  }
+
+  // --- target selection: the whole window, or one layout region ---------------
+  // A region that carries no values of its own follows the global ones. The
+  // panel keeps the desired state locally so dragging previews instantly; the
+  // server re-injects the authoritative CSS right after.
+  var TARGETS = [{ id: 'global', shortLabel: '全局' }];
+  var model = { blur: 0, dim: 0, regions: {}, wallpaperVisible: true };
+  var selected = 'global';
+
+  function regionMeta(id) {
+    for (var i = 1; i < TARGETS.length; i++) if (TARGETS[i].id === id) return TARGETS[i];
+    return null;
+  }
+  function selectorOf(id) {
+    var custom = model.regions[id];
+    var meta = regionMeta(id);
+    return (custom && custom.selector) || (meta && meta.selector) || '';
+  }
+  function isCustom(id) {
+    return customFields(id).length > 0;
+  }
+  /** Which values this region owns; the rest keep following the global ones. */
+  function customFields(id) {
+    var r = model.regions[id] || {};
+    var out = [];
+    if (r.blur !== undefined) out.push('模糊');
+    if (r.dim !== undefined) out.push('压暗');
+    return out;
+  }
+
+  function renderChips() {
+    var box = $('zb-chips');
+    box.innerHTML = '';
+    TARGETS.forEach(function (t) {
+      var b = document.createElement('button');
+      b.className = 'zb-chip';
+      b.textContent = t.shortLabel;
+      b.setAttribute('data-target', t.id);
+      b.setAttribute('data-on', t.id === selected ? '1' : '0');
+      if (t.id !== 'global' && isCustom(t.id)) b.setAttribute('data-custom', '1');
+      b.addEventListener('click', function () { selectTarget(t.id); });
+      box.appendChild(b);
+    });
+  }
+
+  function selectTarget(id) {
+    selected = id;
+    renderChips();
+    syncControls();
+  }
+
+  /** The sliders always show the selected target's effective values. */
+  function syncControls() {
+    var meta = regionMeta(selected);
+    var blur = model.blur, dim = model.dim;
+    if (meta) {
+      var r = model.regions[selected] || {};
+      if (r.blur !== undefined) blur = r.blur;
+      if (r.dim !== undefined) dim = r.dim;
+    }
+    $('zb-blur').value = blur; $('zb-blur-val').textContent = blur;
+    $('zb-dim').value = dim; $('zb-dim-val').textContent = dim;
+    $('zb-region-tools').hidden = !meta;
+    if (meta) renderRegionNote();
+  }
+
+  function renderRegionNote() {
+    var meta = regionMeta(selected);
+    if (!meta) return;
+    var selector = selectorOf(selected);
+    var found = false;
+    try { found = Boolean(selector && document.querySelector(selector)); } catch (e) { found = false; }
+    var fields = customFields(selected);
+    var note = $('zb-region-note');
+    note.setAttribute('data-warn', found ? '0' : '1');
+    note.textContent = meta.label + (fields.length ? ' · 已单独设置:' + fields.join('、') : ' · 跟随全局') +
+      ' · ' + (found ? selector : '未找到元素,点「拾取元素」指定');
+  }
+
+  /**
+   * The live config handed to the injected runtime. A region whose values match
+   * the global ones draws nothing of its own — the same rule the server uses
+   * when deciding which regions get a layer.
+   */
+  function liveCfg() {
+    var regions = {};
+    Object.keys(model.regions).forEach(function (id) {
+      var r = model.regions[id] || {};
+      var blur = r.blur !== undefined ? r.blur : model.blur;
+      var dim = r.dim !== undefined ? r.dim : model.dim;
+      if (blur === model.blur && dim === model.dim) return;
+      regions[id] = {
+        filter: blur > 0 ? 'blur(' + blur + 'px)' : 'none',
+        dim: dim / 100,
+        selector: selectorOf(id)
+      };
+    });
+    return {
+      global: { filter: model.blur > 0 ? 'blur(' + model.blur + 'px)' : 'none', dim: model.dim / 100 },
+      regions: regions
+    };
   }
 
   // Local live preview; the server re-injects the authoritative CSS right after.
   function preview() {
-    var w = wallpaperEl(); if (!w) return;
-    var b = Number($('zb-blur').value), d = Number($('zb-dim').value);
-    w.style.filter = b > 0 ? 'blur(' + b + 'px)' : 'none';
-    w.style.transform = b > 0 ? 'scale(1.04)' : 'none';
-    document.documentElement.style.setProperty('--zcode-beautify-dim', String(d / 100));
+    var rt = window.__zcodeBeautify;
+    if (rt && typeof rt.applyLive === 'function') rt.applyLive(liveCfg());
   }
 
   var pushTimer = null;
-  function pushConfig() {
+  function pushConfig(patch) {
     clearTimeout(pushTimer);
     pushTimer = setTimeout(function () {
-      post('/api/config', {
-        blur: Number($('zb-blur').value),
-        dim: Number($('zb-dim').value),
-        monet: $('zb-monet').checked,
-        wallpaperVisible: $('zb-vis').checked
-      }, function (d) { status(d && d.windows > 0 ? '已应用 applied' : '已保存(ZCode 未连接)'); });
+      post('/api/config', patch, function (d) { status(d && d.windows > 0 ? '已应用 applied' : '已保存(ZCode 未连接)'); });
     }, 300);
+  }
+
+  function onSlider(field) {
+    var value = Number($('zb-' + field).value);
+    if (!regionMeta(selected)) {
+      model[field] = value;
+      preview();
+      var patch = {};
+      patch[field] = value;
+      pushConfig(patch);
+      return;
+    }
+    // Only the moved field becomes the region's own value: the other keeps
+    // following the global one, so a later global change still reaches it.
+    var r = model.regions[selected] || {};
+    r[field] = value;
+    model.regions[selected] = r;
+    renderChips();
+    renderRegionNote();
+    preview();
+    var regions = {};
+    regions[selected] = {};
+    regions[selected][field] = value;
+    pushConfig({ regions: regions });
   }
 
   // The control service lives in a separate process that can stop or die. When
@@ -175,7 +318,7 @@ export function buildPanelScript(apiPort: number, token: string): string {
   function panelOpen() { return !$('zb-panel').hidden; }
   /** Re-check the service: while the panel is open, and always while offline. */
   function beat(on) {
-    if (on && !beatTimer) beatTimer = setInterval(function () { refresh(); refreshStatus(); }, 4000);
+    if (on && !beatTimer) beatTimer = setInterval(refresh, 4000);
     if (!on && beatTimer) { clearInterval(beatTimer); beatTimer = null; }
   }
 
@@ -193,6 +336,11 @@ export function buildPanelScript(apiPort: number, token: string): string {
       $('zb-fit').removeAttribute('data-fit');
       $('zb-reset').textContent = '还原默认外观';
       $('zb-reset').setAttribute('data-mode', 'reset');
+      // A region row that cannot be read from the service would otherwise show
+      // a plausible-looking "跟随全局" for a state nobody actually knows.
+      selected = 'global';
+      $('zb-chips').innerHTML = '';
+      $('zb-region-tools').hidden = true;
       beat(true);
     } else {
       if (!panelOpen()) beat(false);
@@ -200,12 +348,34 @@ export function buildPanelScript(apiPort: number, token: string): string {
   }
 
   function refresh() {
-    fetch(API + '/api/config', { headers: auth() })
+    fetch(API + '/api/config')
       .then(function (r) { return r.json(); })
       .then(function (c) {
         setOffline(false);
-        $('zb-blur').value = c.blur; $('zb-blur-val').textContent = c.blur;
-        $('zb-dim').value = c.dim; $('zb-dim-val').textContent = c.dim;
+        model.blur = c.blur;
+        model.dim = c.dim;
+        model.wallpaperVisible = !!c.wallpaperVisible;
+        model.regions = {};
+        TARGETS = [{ id: 'global', shortLabel: '全局' }];
+        (c.regions || []).forEach(function (region) {
+          TARGETS.push({
+            id: region.id,
+            label: region.label,
+            shortLabel: region.shortLabel,
+            selector: region.defaultSelector
+          });
+          var custom = {};
+          var own = region.own || {};
+          if (own.blur !== undefined) custom.blur = own.blur;
+          if (own.dim !== undefined) custom.dim = own.dim;
+          if (region.selector && region.selector !== region.defaultSelector) custom.selector = region.selector;
+          if (custom.blur !== undefined || custom.dim !== undefined || custom.selector) {
+            model.regions[region.id] = custom;
+          }
+        });
+        if (selected !== 'global' && !regionMeta(selected)) selected = 'global';
+        renderChips();
+        syncControls();
         $('zb-monet').checked = !!c.monet;
         $('zb-vis').checked = !!c.wallpaperVisible;
         $('zb-fit') && applyFitLabel($('zb-fit'), c.fit || 'cover');
@@ -228,13 +398,19 @@ export function buildPanelScript(apiPort: number, token: string): string {
   }
 
   $('zb-blur').addEventListener('input', function () {
-    $('zb-blur-val').textContent = this.value; preview(); pushConfig();
+    $('zb-blur-val').textContent = this.value; onSlider('blur');
   });
   $('zb-dim').addEventListener('input', function () {
-    $('zb-dim-val').textContent = this.value; preview(); pushConfig();
+    $('zb-dim-val').textContent = this.value; onSlider('dim');
   });
-  $('zb-monet').addEventListener('change', pushConfig);
-  $('zb-vis').addEventListener('change', pushConfig);
+  $('zb-monet').addEventListener('change', function () {
+    pushConfig({ monet: this.checked });
+  });
+  $('zb-vis').addEventListener('change', function () {
+    model.wallpaperVisible = this.checked;
+    preview();
+    pushConfig({ wallpaperVisible: this.checked });
+  });
 
   var FITS = ['cover', 'contain', 'smart'];
   var FIT_LABELS = { cover: '填满裁剪', contain: '完整显示', smart: '智能适配' };
@@ -261,6 +437,290 @@ export function buildPanelScript(apiPort: number, token: string): string {
     fr.readAsDataURL(f);
   });
 
+  // --- region element picking -------------------------------------------------
+  // ZCode's own layout hooks are the defaults; when a release changes the shell,
+  // the user clicks the area once and the panel stores a selector for it.
+  var KNOWN_REGION_SELECTORS = [
+    '[data-workspace-sidebar-panel]',
+    '[data-workspace-conversation-frame]',
+    '[data-workspace-terminal-frame]',
+    '[data-workspace-side-frame]'
+  ];
+
+  function pickElement() {
+    return new Promise(function (resolve) {
+      var hint = document.createElement('div');
+      hint.id = 'zb-pick-hint';
+      hint.textContent = '点击界面中该区域的位置(Esc 取消)';
+      document.body.appendChild(hint);
+      function cleanup() {
+        document.removeEventListener('click', onClick, true);
+        document.removeEventListener('keydown', onKey, true);
+        hint.remove();
+      }
+      function onKey(e) { if (e.key === 'Escape') { cleanup(); resolve(null); } }
+      function onClick(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var el = document.elementFromPoint(e.clientX, e.clientY);
+        cleanup();
+        resolve(el);
+      }
+      document.addEventListener('click', onClick, true);
+      document.addEventListener('keydown', onKey, true);
+    });
+  }
+
+  /** Walks up from the clicked node to the region that contains it. */
+  function regionAncestor(el) {
+    var node = el;
+    while (node && node !== document.body) {
+      for (var i = 0; i < KNOWN_REGION_SELECTORS.length; i++) {
+        try { if (node.matches(KNOWN_REGION_SELECTORS[i])) return node; } catch (e) { /* bad selector */ }
+      }
+      node = node.parentElement;
+    }
+    // Unknown shell: fall back to the outermost layout child, i.e. the direct
+    // child of the workspace shell that holds the clicked node.
+    node = el;
+    while (node && node.parentElement && node.parentElement !== document.body &&
+           !node.parentElement.hasAttribute('data-workspace-shell')) {
+      node = node.parentElement;
+    }
+    return node;
+  }
+
+  /** Builds a selector that survives a restart: id, then a unique data attribute. */
+  function cssPath(el) {
+    if (!el || el.nodeType !== 1) return '';
+    if (el.id) return '#' + CSS.escape(el.id);
+    var attrs = [];
+    for (var i = 0; i < el.attributes.length; i++) {
+      var name = el.attributes[i].name;
+      if (name.indexOf('data-') === 0 || name === 'role') attrs.push(name);
+    }
+    for (var j = 0; j < attrs.length; j++) {
+      var candidate = el.tagName.toLowerCase() + '[' + attrs[j] + ']';
+      try { if (document.querySelectorAll(candidate).length === 1) return candidate; } catch (e) { /* skip */ }
+    }
+    // Last resort: a positional path, only when it can be anchored to <body>.
+    var path = '', node = el, anchored = false;
+    for (var depth = 0; depth < 12 && node && node.nodeType === 1; depth++) {
+      var parent = node.parentElement;
+      if (!parent) break;
+      var index = 1, sibling = node;
+      while ((sibling = sibling.previousElementSibling)) index++;
+      path = ' > ' + node.tagName.toLowerCase() + ':nth-child(' + index + ')' + path;
+      node = parent;
+      if (node === document.body) { anchored = true; break; }
+    }
+    return anchored ? 'body' + path : '';
+  }
+
+  $('zb-clear-region').addEventListener('click', function () {
+    if (!regionMeta(selected)) return;
+    var id = selected;
+    delete model.regions[id];
+    renderChips();
+    syncControls();
+    preview();
+    var regions = {};
+    regions[id] = { blur: null, dim: null, selector: null };
+    pushConfig({ regions: regions });
+  });
+
+  $('zb-pick-region').addEventListener('click', function () {
+    if (!regionMeta(selected)) return;
+    var id = selected;
+    pickElement().then(function (el) {
+      if (!el) { status('已取消'); return; }
+      var selector = cssPath(regionAncestor(el));
+      if (!selector) { status('无法生成稳定选择器,请改点区域内的空白处'); return; }
+      var custom = model.regions[id] || {};
+      custom.selector = selector;
+      model.regions[id] = custom;
+      renderChips();
+      renderRegionNote();
+      preview();
+      var regions = {};
+      regions[id] = { selector: selector };
+      pushConfig({ regions: regions });
+      status('已记录 ' + selector);
+    });
+  });
+
+  // --- scene wallpaper import ------------------------------------------------
+  var STAGE_LABELS = {
+    starting: '准备中', detect: '识别中', deps: '检查依赖', opening: '渲染中', 'render-ready': '渲染中',
+    recording: '录制中', closing: '录制中', processing: '处理中', poster: '处理中', saving: '保存中',
+    'cache-hit': '缓存命中', done: '完成', error: '失败'
+  };
+  var importTimer = null;
+  function setProgress(on, stage, fromCache) {
+    var box = $('zb-progress');
+    box.hidden = !on;
+    if (on) {
+      var label = STAGE_LABELS[stage] || stage || '…';
+      // The pipeline stages advance in order; map them onto a smooth bar.
+      var order = ['starting', 'detect', 'deps', 'opening', 'render-ready', 'recording', 'closing', 'processing', 'poster', 'saving', 'done'];
+      var pct = stage === 'done' ? 100 : (stage === 'cache-hit' ? 100 : 8 + 88 * Math.max(0, order.indexOf(stage)) / (order.length - 1));
+      $('zb-progress-bar').style.width = pct + '%';
+      box.firstElementChild.nextSibling.textContent = label + (stage === 'cache-hit' ? '(缓存)' : '');
+    }
+  }
+  function showGuide(guide, retryable) {
+    var g = $('zb-guide');
+    g.hidden = !guide;
+    g.textContent = guide || '';
+    $('zb-guide-retry').hidden = !retryable;
+  }
+  $('zb-pick').addEventListener('click', function () {
+    var btn = this;
+    btn.textContent = '打开选择器…';
+    fetch(API + '/api/pick-scene', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        btn.textContent = '选择并导入…';
+        if (!d || !d.ok || !d.path) return; // user cancelled the dialog
+        $('zb-scene-path').value = d.path;
+        $('zb-import').click();
+      })
+      .catch(function () { btn.textContent = '选择并导入…'; status('无法连接美化服务 service unreachable'); });
+  });
+
+  $('zb-import').addEventListener('click', function () {
+    var p = $('zb-scene-path').value.trim();
+    if (!p) { status('请先粘贴场景壁纸路径'); return; }
+    showGuide('', false);
+    post('/api/import-scene', { path: p }, function (d) {
+      if (d && d.error) { status(d.error); return; }
+      setProgress(true, 'starting');
+      if (importTimer) clearInterval(importTimer);
+      importTimer = setInterval(pollImport, 600);
+    });
+  });
+  function pollImport() {
+    fetch(API + '/api/import-status')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        setProgress(j.running || j.stage === 'done', j.stage);
+        if (j.error) {
+          clearInterval(importTimer); importTimer = null;
+          setProgress(false);
+          showGuide(j.guide || ('导入失败: ' + j.error), Boolean(j.guide));
+          return;
+        }
+        if (!j.running && j.stage === 'done') {
+          clearInterval(importTimer); importTimer = null;
+          status(j.result && j.result.fromCache ? '已从缓存载入' : '动态壁纸已应用');
+          refresh();
+        }
+      })
+      .catch(function () { /* transient */ });
+  }
+  $('zb-guide-retry').addEventListener('click', function () {
+    showGuide('', false);
+    $('zb-import').click();
+  });
+
+  // --- library (static images + imported scene loops) ------------------------
+  function loadLibrary() {
+    fetch(API + '/api/library')
+      .then(function (r) { return r.json(); })
+      .then(function (lib) {
+        var el = $('zb-lib');
+        el.innerHTML = '';
+        var head1 = document.createElement('div');
+        head1.className = 'zb-lib-head'; head1.textContent = '壁纸库 — 动态';
+        el.appendChild(head1);
+        (lib.scenes || []).forEach(function (s) {
+          el.appendChild(libItem(s.name || ('场景 ' + s.hash.slice(0, 8)), { hash: s.hash }, s.hash, 'scene', s.hash));
+        });
+        var head2 = document.createElement('div');
+        head2.className = 'zb-lib-head'; head2.textContent = '壁纸库 — 图片';
+        el.appendChild(head2);
+        (lib.images || []).forEach(function (im) {
+          el.appendChild(libItem(im.name, { path: im.path }, im.path, 'image', im.path));
+        });
+        if (!(lib.scenes || []).length && !(lib.images || []).length) {
+          el.innerHTML = '<div class="zb-lib-head">壁纸库为空 — 导入或更换壁纸后出现在这里</div>';
+        }
+      })
+      .catch(function () { /* offline */ });
+  }
+  /** One library row: click-to-apply label + rename (inline) + two-step delete. */
+  function libItem(label, applyBody, key, kind, ref) {
+    var row = document.createElement('div');
+    row.className = 'zb-item';
+    var cur = localStorage.getItem('zcode-beautify:current-key');
+    if (cur === key) row.setAttribute('data-current', '1');
+
+    var labelEl = document.createElement('span');
+    labelEl.className = 'zb-label';
+    labelEl.textContent = label;
+    labelEl.title = label;
+    labelEl.addEventListener('click', function () {
+      post('/api/apply-wallpaper', applyBody, function (r) {
+        if (r && r.error) { status(r.error); return; }
+        try { localStorage.setItem('zcode-beautify:current-key', key); } catch (e) {}
+        status('已应用 applied');
+        loadLibrary();
+      });
+    });
+    row.appendChild(labelEl);
+
+    function renameEditor() {
+      var input = document.createElement('input');
+      input.className = 'zb-label-input';
+      input.value = label;
+      row.replaceChild(input, labelEl);
+      input.focus(); input.select();
+      var done = function (save) {
+        if (save && input.value.trim() && input.value.trim() !== label) {
+          post('/api/library-rename', { kind: kind, hash: applyBody.hash, path: applyBody.path, name: input.value.trim() },
+            function (r) {
+              if (r && r.error) { status(r.error); }
+              loadLibrary();
+            });
+        } else {
+          loadLibrary();
+        }
+      };
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') done(true);
+        if (e.key === 'Escape') done(false);
+      });
+      input.addEventListener('blur', function () { done(true); });
+    }
+
+    var ren = document.createElement('button');
+    ren.className = 'zb-act'; ren.textContent = '✎'; ren.title = '重命名';
+    ren.addEventListener('click', renameEditor);
+    row.appendChild(ren);
+
+    var del = document.createElement('button');
+    del.className = 'zb-act'; del.textContent = '🗑'; del.title = '删除';
+    var disarm = null;
+    del.addEventListener('click', function () {
+      if (del.getAttribute('data-armed') !== '1') {
+        del.setAttribute('data-armed', '1'); del.textContent = '确认删除?';
+        disarm = setTimeout(function () { del.removeAttribute('data-armed'); del.textContent = '🗑'; }, 3000);
+        return;
+      }
+      clearTimeout(disarm);
+      post('/api/library-delete', { kind: kind, hash: applyBody.hash, path: applyBody.path }, function (r) {
+        if (r && r.error) { status(r.error); del.removeAttribute('data-armed'); del.textContent = '🗑'; return; }
+        if (localStorage.getItem('zcode-beautify:current-key') === key) {
+          try { localStorage.removeItem('zcode-beautify:current-key'); } catch (e) {}
+        }
+        status('已删除 deleted');
+        loadLibrary();
+      });
+    });
+    row.appendChild(del);
+    return row;
+  }
+
   $('zb-reset').addEventListener('click', function () {
     var mode = this.getAttribute('data-mode') || 'reset';
     post(mode === 'restore' ? '/api/restore' : '/api/reset', {}, function () {
@@ -279,73 +739,20 @@ export function buildPanelScript(apiPort: number, token: string): string {
     refresh();
   });
 
-  // The service answers but ZCode is not listening for it: either the app is
-  // closed, or it came up without the debug port. The second case is the one
-  // the plugin cannot fix on its own, and the only lever is a proper restart.
-  var RECOVERY_HINTS = {
-    off: 'ZCode 重启后不会自动恢复,需要手动重新应用。',
-    'on-start': 'ZCode 每次启动时自动恢复一次,不占内存;设置面板不会自动出现。',
-    always: '后台常驻一个小服务(约 60MB 内存),壁纸自动恢复,设置面板随时可用。'
-  };
-
-  function applyStatus(s) {
-    $('zb-needs-relaunch').hidden = !(s && !s.cdpReachable && s.zcodeRunning);
-    if (s && s.recovery) {
-      var sel = $('zb-recovery');
-      if (sel && document.activeElement !== sel) sel.value = s.recovery.mode;
-      var hint = $('zb-recovery-hint');
-      if (hint) hint.textContent = RECOVERY_HINTS[s.recovery.mode] || '';
-    }
-  }
-
-  function refreshStatus() {
-    fetch(API + '/api/status', { headers: auth() })
-      .then(function (r) { return r.json(); })
-      .then(applyStatus)
-      .catch(function () { /* the offline banner already covers this */ });
-  }
-
-  $('zb-relaunch').addEventListener('click', function () {
-    var btn = this;
-    btn.textContent = '正在重启 ZCode,请稍候…';
-    btn.disabled = true;
-    post('/api/relaunch', {}, function () {
-      btn.textContent = '立即重启 ZCode';
-      btn.disabled = false;
-      status('ZCode 已重启,壁纸马上回来');
-      setTimeout(refresh, 2000);
-      setTimeout(refreshStatus, 3000);
-    });
-  });
-
-  $('zb-recovery').addEventListener('change', function () {
-    var value = this.value;
-    post('/api/recovery', { mode: value }, function () {
-      var hint = $('zb-recovery-hint');
-      if (hint) hint.textContent = RECOVERY_HINTS[value] || '';
-      status('自动恢复设置已保存');
-    });
-  });
-
   $('zb-fab').addEventListener('click', function () {
     var p = $('zb-panel');
     p.hidden = !p.hidden;
     if (!p.hidden) {
       refresh();
-      refreshStatus();
+      loadLibrary();
       beat(true);
     } else if (root.getAttribute('data-offline') !== '1') {
       beat(false);
     }
   });
-  $('zb-close').addEventListener('click', function () {
-    $('zb-panel').hidden = true;
-    if (root.getAttribute('data-offline') !== '1') beat(false);
-  });
 
   // Fill in the fit label (and control values) right away, not just on open.
   refresh();
-  refreshStatus();
 
   (function () {
     var head = $('zb-head'), panel = $('zb-panel');
@@ -383,6 +790,15 @@ export function buildPanelScript(apiPort: number, token: string): string {
         w.id = 'zcode-beautify-wallpaper';
         document.documentElement.appendChild(w);
         w.style.backgroundImage = 'url(' + savedWp + ')';
+      }
+      // The saved CSS styles the global blur/dim layer but cannot create it.
+      // Region layers are deliberately not restored here: without the runtime
+      // there is nothing to measure them against, so the theme falls back to
+      // the global look until the next injection.
+      if (!document.getElementById('zcode-beautify-global')) {
+        var g = document.createElement('div');
+        g.id = 'zcode-beautify-global';
+        document.documentElement.appendChild(g);
       }
     }
   }

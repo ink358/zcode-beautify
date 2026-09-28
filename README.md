@@ -2,17 +2,20 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-Beautify the **ZCode desktop client**: use any image as a background wallpaper and adapt the whole UI with Material Design 3 (Monet) dynamic color — plus a live settings panel for real-time tuning.
+Beautify the **ZCode desktop client**: use any image — or any **video / Wallpaper Engine scene wallpaper** — as a background wallpaper and adapt the whole UI with Material Design 3 (Monet) dynamic color — plus a live settings panel for real-time tuning.
 
 > 📷 Screenshot welcome — PRs adding one to `docs/screenshot.png` are appreciated.
 
 ## Features
 
+- **Dynamic wallpapers** — import a Wallpaper Engine **scene** (`.pkg` or workshop directory) or a plain **video** (`.mp4`/`.webm`): scenes are rendered in a dedicated Wallpaper Engine window, captured through Desktop Duplication and processed into a perfectly seamless loop (first frame == last frame); long videos are trimmed to a middle segment. Loops are cached content-addressed and streamed to the renderer over HTTP — motion with no interaction and no sound.
 - **Wallpaper** — any local image becomes a fixed background layer behind the UI, with three framing modes: `cover` (fill and crop), `contain` (letterboxed over a blurred backdrop of the same picture), and `smart` — a local AI-style analysis that finds the salient subject and picks the best framing and focus point automatically.
+- **Per-region blur & dim** — the sidebar, the main area, the terminal and the right side panel each get their own blur and dim, so one region can stay sharp while the rest is soft (or the other way round). Regions are found through ZCode's own `data-workspace-*` layout hooks; if a ZCode release moves them, one click in the panel re-binds a region to whatever element you point at.
 - **Monet theming** — a source color is extracted from the wallpaper with Google's official MD3 algorithm; light/dark palettes are mapped onto ZCode's semantic CSS variables (35+ tokens).
-- **Live settings panel** — a draggable panel inside ZCode with blur/dim sliders, Monet and wallpaper-visibility toggles, one-click wallpaper swap, and reset. Changes preview instantly and persist.
-- **Conversation control** — bundled slash command `/beautify` and MCP tools let the ZCode agent set the wallpaper or tune the theme on your behalf.
-- **Survives restarts** — the injected theme dies with the renderer on every ZCode restart, so the plugin puts it back: `on-start` (default) has the MCP host restore it when ZCode starts, `always` keeps a background service alive so the theme *and* the settings panel survive a reboot. Choose either in the settings panel.
+- **Live settings panel** — a draggable panel inside ZCode with blur/dim sliders, a target picker for the whole window or a single region, Monet and wallpaper-visibility toggles, one-click wallpaper swap, a native file-picker import for dynamic wallpapers (with progress bar and dependency guidance), a grouped wallpaper library, and reset. Changes preview instantly and persist.
+- **Zero-touch serve** — the MCP server starts the background service automatically when ZCode launches, so the panel is simply always there.
+- **Conversation control** — bundled slash command `/beautify` and MCP tools (`set_background`, `import_scene_wallpaper`, `apply_options`, …) let the ZCode agent set the wallpaper or tune the theme on your behalf.
+- **Self-healing** — while `serve` runs, the theme survives renderer reloads automatically; the last look is also cached in `localStorage` as a fallback.
 
 ## How it works
 
@@ -21,8 +24,10 @@ ZCode is an Electron app whose UI theming is driven by Tailwind v4 `--color-*` C
 1. starts ZCode with `--remote-debugging-port=9222` (one-time `launch`);
 2. connects over the Chrome DevTools Protocol and injects CSS/JS into the renderer:
    - a fixed-position wallpaper layer (image embedded as data URI),
+   - a backdrop layer carrying the global blur and dim,
    - translucent background variables so the wallpaper shows through,
-   - MD3 light/dark palettes overriding ZCode's semantic tokens;
+   - MD3 light/dark palettes overriding ZCode's semantic tokens,
+   - one backdrop layer per layout region, with the global one clipped around the regions that override it;
 3. keeps the injection sessions open (`serve`) so the theme and the settings panel survive renderer reloads.
 
 It never modifies ZCode's installation files, so ZCode upgrades are unaffected.
@@ -31,6 +36,7 @@ It never modifies ZCode's installation files, so ZCode upgrades are unaffected.
 
 - Node.js ≥ 20 available on your PATH.
 - ZCode desktop client (Windows / macOS / Linux).
+- For dynamic wallpapers (optional): **Wallpaper Engine** (Steam) and **ffmpeg ≥ 5.0** on PATH — both are auto-detected, and the panel shows install guidance when missing. Capture uses the Desktop Duplication API, so dynamic import is **Windows-only**; static image wallpapers work everywhere.
 
 ## Two packages, both installable by handing an AI the link
 
@@ -82,24 +88,15 @@ node dist/cli.js launch
 # 2) Set a wallpaper with Monet adaptation
 node dist/cli.js apply "D:\pictures\wallpaper.jpg" --blur 6 --dim 30
 
-# 3) Persist the debug port into every launch entry, so starting ZCode normally
-#    still opens it. Entries needing admin rights are reported and skipped.
-node dist/cli.js repair-launchers
-
-# 4) Choose what restores the theme after a restart.
-#    on-start (default) = no resident process, no settings panel.
-#    always             = background service; theme + panel survive a reboot.
-node dist/cli.js recovery on-start
-
-# 5) Only needed for `on-start`: get the live settings panel now.
+# 3) (Recommended) Keep the theme alive + get the live settings panel.
 #    --detach backgrounds it, so the panel keeps working after this shell
 #    (or the agent session that started it) is gone.
 node dist/cli.js serve --detach
 ```
 
-With `serve` running, a 🎨 button appears in the bottom-right corner of ZCode. Open it to tune blur/dim live, cycle the framing mode (cover → contain → smart), toggle Monet colors or wallpaper translucency, swap the wallpaper image, or reset — everything previews instantly and is saved automatically. If the service is not running, the panel shows an explicit ⚠ offline banner instead of a zeroed configuration.
+With `serve` running, a 🎨 button appears in the bottom-right corner of ZCode. Open it to tune blur/dim live, switch the sliders between the whole window and one region (sidebar / main / terminal / side panel), cycle the framing mode (cover → contain → smart), toggle Monet colors or wallpaper translucency, swap the wallpaper image, or reset — everything previews instantly and is saved automatically. If the service is not running, the panel shows an explicit ⚠ offline banner instead of a zeroed configuration.
 
-You can also just type `/beautify <image path>` in ZCode and let the agent do it, then say things like "make it blurrier" (handled by the `apply_options` MCP tool).
+You can also just type `/beautify <image path>` in ZCode and let the agent do it, then say things like "make it blurrier", "blur the terminal but keep the sidebar sharp", or "reset the sidebar to the global values" (handled by the `apply_options` MCP tool).
 
 ## CLI reference
 
@@ -108,11 +105,9 @@ You can also just type `/beautify <image path>` in ZCode and let the agent do it
 | `launch [--port N]` | Start ZCode with `--remote-debugging-port` (quit ZCode first) |
 | `apply <image> [--blur] [--dim] [--fit] [--no-monet]` | Set wallpaper + adapt colors (`--fit cover\|contain\|smart`) |
 | `colors` | Re-apply the stored theme without changing the image |
+| `region <id> [--blur] [--dim] [--selector] [--reset]` | Tune one region's blur/dim (`id`: `sidebar`, `main`, `terminal`, `sidepanel`); `--reset` puts it back on the global values |
 | `serve [--detach] [--api-port M]` | Watch mode + settings panel + local control API (default API port 9223); `--detach` survives the shell that started it |
 | `watch` | Headless watch mode: re-inject whenever ZCode restarts |
-| `recovery [off\|on-start\|always]` | How the theme comes back after a restart (default `on-start`) |
-| `autostart [install\|uninstall]` | Register the resident service to start at sign-in (used by `always`) |
-| `repair-launchers [--dry-run]` | Add `--remote-debugging-port` to every launch entry missing it |
 | `reset` | Remove wallpaper and color overrides |
 | `status` | Show CDP reachability and renderer targets |
 
@@ -121,27 +116,22 @@ You can also just type `/beautify <image path>` in ZCode and let the agent do it
 | Tool | Purpose |
 |---|---|
 | `set_background` | Set wallpaper + Monet colors |
-| `apply_options` | Tune blur/dim/monet/wallpaper visibility/framing without re-sending the image |
+| `apply_options` | Tune blur/dim/monet/wallpaper visibility/framing without re-sending the image, including per-region blur/dim via its `regions` argument |
 | `refresh_theme` | Re-inject the stored theme after a restart |
 | `reset_appearance` | Remove wallpaper and overrides |
 | `beautify_status` | Show the stored config |
-| `recovery_status` | Report the recovery mode, autostart entry and CDP reachability |
-| `set_recovery_mode` | Switch between `off` / `on-start` / `always` |
-| `repair_launchers` | Add the debug-port flag to launch entries missing it |
 
 ## Project structure
 
 ```
 ├─ src/
-│  ├─ cli.ts                 # CLI entry: launch / apply / colors / reset / status / watch / serve
+│  ├─ cli.ts                 # CLI entry: launch / apply / colors / region / reset / status / watch / serve
 │  ├─ core/
 │  │  ├─ cdp.ts              # Minimal Chrome DevTools Protocol client + injection scripts
 │  │  ├─ inject.ts           # Assembles the injected payload (wallpaper CSS + token overrides)
-│  │  ├─ autostart.ts        # Per-user autostart registration (VBS / LaunchAgent / XDG)
-│  │  ├─ launchers.ts        # Finds launch entries missing the debug-port flag and adds it
 │  │  ├─ launch.ts           # Config persistence + ZCode launcher (single-instance aware)
 │  │  ├─ monet.ts            # Image decode, MD3 source-color extraction, smart-fit analysis
-│  │  ├─ recovery.ts         # off / on-start / always — what restores the theme after a restart
+│  │  ├─ regions.ts          # Layout regions: ids, ZCode's layout hooks, override resolution
 │  │  ├─ server.ts           # `serve` mode: localhost control API + persistent injection sessions
 │  │  ├─ session.ts          # Shared apply/reset operations used by CLI and MCP
 │  │  └─ tokens.ts           # MD3 schemes → ZCode's Tailwind v4 --color-* variables
@@ -183,11 +173,9 @@ zip, or read [`skill-pack/SKILL.md`](skill-pack/SKILL.md) directly.
 ## Risks & limitations
 
 - Injection happens over CDP — an **unofficial** mechanism. Updates to ZCode may break it; `reset` always restores the default look.
-- ZCode only opens its debug port when it is started with `--remote-debugging-port`, and an instance that is already running can never grow one — the flag has to come from the launcher. `repair-launchers` writes it into every launch entry it can reach (desktop, Start Menu, pinned taskbar, the `zcode://` handler and the context-menu verbs); machine-wide entries need administrator rights and are reported instead.
-- **Two entries lose the flag again on their own.** ZCode's updater rebuilds the Start Menu shortcut (the flag goes with it), and the app re-registers its protocol and context-menu registry handlers on every start, restoring those values. The shortcut copies are the durable entries — and most third-party launchers (Flow Launcher, PowerToys Run, …) index the Start Menu shortcut and start it through ShellExecute, so the flag there covers them too. If the theme disappears after an update: run `repair-launchers`, then quit ZCode completely and start it from a repaired shortcut. In `on-start` mode (default) the plugin also repairs the entries by itself when it finds the port unreachable at startup — restarting once is then enough.
-- The injected theme lives in the renderer and is lost on every ZCode restart. `on-start` (default) restores it once when ZCode starts; `always` keeps the resident `serve` daemon alive so the theme and the settings panel both survive. A foreground `serve` dies with the terminal (or agent session) that spawned it — use `serve --detach`, or let `always` manage it.
+- `launch` restarts ZCode once. Without `serve`/`watch` running, the theme is lost on every ZCode restart (CDP sessions are scoped to the connection). To make it permanent, add ` --remote-debugging-port=9222` to your ZCode shortcut's target — the theme then survives every restart as long as `serve` runs. Start it with `serve --detach`: a foreground `serve` dies with the terminal (or agent session) that spawned it, and the panel then reports itself offline.
 - Functional colors (success/warning/destructive) are intentionally left untouched.
-- The control API binds to `127.0.0.1` and requires a token that only the injected panel carries, so a stray local process — or a web page open in a local browser — cannot drive it.
+- The control API binds to `127.0.0.1` only and accepts requests from any local process by design (the injected panel needs CORS).
 
 ## License
 
