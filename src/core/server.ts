@@ -96,6 +96,8 @@ function publicConfig(config: BeautifyConfig) {
     cdpPort: config.port,
     mediaType: config.mediaType ?? "image",
     sceneHash: config.sceneHash,
+    surfaceColor: config.surfaceColor ?? "",
+    surfaceAlpha: config.surfaceAlpha ?? 60,
     // The panel renders one row per region and needs the resolved values, which
     // fields the region owns, and the selector it is bound to.
     regions: effectiveRegions(config).map((region) => ({
@@ -119,6 +121,13 @@ function sanitize(body: any): Partial<BeautifyConfig> {
   if (typeof body?.monet === "boolean") out.monet = body.monet;
   if (typeof body?.wallpaperVisible === "boolean") out.wallpaperVisible = body.wallpaperVisible;
   if (body?.fit === "cover" || body?.fit === "contain" || body?.fit === "smart") out.fit = body.fit;
+  if (typeof body?.surfaceColor === "string") {
+    const hex = body.surfaceColor.trim();
+    out.surfaceColor = /^#[0-9a-fA-F]{6}$/.test(hex) ? hex.toUpperCase() : "";
+  }
+  if (typeof body?.surfaceAlpha === "number" && body.surfaceAlpha >= 0 && body.surfaceAlpha <= 100) {
+    out.surfaceAlpha = Math.round(body.surfaceAlpha);
+  }
   return out;
 }
 

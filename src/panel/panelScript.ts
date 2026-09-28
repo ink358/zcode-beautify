@@ -118,6 +118,12 @@ export function buildPanelScript(apiPort: number): string {
     '      <input type="range" id="zb-blur" min="0" max="30" step="1" value="0"></div>' +
     '    <div class="zb-row"><label title="背景压暗程度(百分比,越高越暗)"><span id="zb-dim-label">背景压暗</span><span><span id="zb-dim-val">0</span>%</span></label>' +
     '      <input type="range" id="zb-dim" min="0" max="80" step="1" value="0"></div>' +
+    '    <div class="zb-row"><label title="任务卡与消息气泡的表面颜色和透明度;点 ↺ 恢复莫奈自动配色"><span>表面颜色</span></label>' +
+    '      <div class="zb-actions" style="align-items:center">' +
+    '        <input type="color" id="zb-surface-color" value="#1b1c17" title="表面颜色">' +
+    '        <input type="range" id="zb-surface-alpha" min="10" max="95" step="1" value="60" title="表面不透明度 %" style="width:96px">' +
+    '        <button class="zb-btn" id="zb-surface-reset" title="恢复莫奈自动配色">↺</button>' +
+    '      </div></div>' +
     '    <div class="zb-row" id="zb-region-tools" hidden>' +
     '      <div class="zb-actions">' +
     '        <button class="zb-btn" id="zb-pick-region" title="在界面中点击该区域,把它的元素记为这个区域的边界(用于 ZCode 改版后自动识别失效的情况)">⌖ 拾取元素</button>' +
@@ -176,7 +182,7 @@ export function buildPanelScript(apiPort: number): string {
   // panel keeps the desired state locally so dragging previews instantly; the
   // server re-injects the authoritative CSS right after.
   var TARGETS = [{ id: 'global', shortLabel: '全局' }];
-  var model = { blur: 0, dim: 0, regions: {}, wallpaperVisible: true };
+  var model = { blur: 0, dim: 0, regions: {}, wallpaperVisible: true, surfaceColor: '', surfaceAlpha: 60 };
   var selected = 'global';
 
   function regionMeta(id) {
@@ -332,6 +338,8 @@ export function buildPanelScript(apiPort: number): string {
       $('zb-dim').value = 0; $('zb-dim-val').textContent = '0';
       $('zb-monet').checked = false;
       $('zb-vis').checked = false;
+      $('zb-surface-color').disabled = true;
+      $('zb-surface-alpha').disabled = true;
       $('zb-fit').textContent = '背景填充: 未知';
       $('zb-fit').removeAttribute('data-fit');
       $('zb-reset').textContent = '还原默认外观';
@@ -378,6 +386,12 @@ export function buildPanelScript(apiPort: number): string {
         syncControls();
         $('zb-monet').checked = !!c.monet;
         $('zb-vis').checked = !!c.wallpaperVisible;
+        model.surfaceColor = c.surfaceColor || '';
+        model.surfaceAlpha = typeof c.surfaceAlpha === 'number' ? c.surfaceAlpha : 60;
+        $('zb-surface-color').disabled = false;
+        $('zb-surface-color').value = model.surfaceColor || '#1b1c17';
+        $('zb-surface-alpha').value = model.surfaceAlpha;
+        $('zb-surface-alpha').disabled = !model.surfaceColor;
         $('zb-fit') && applyFitLabel($('zb-fit'), c.fit || 'cover');
         var resetBtn = $('zb-reset');
         if (c.wallpaperSet) {
@@ -410,6 +424,21 @@ export function buildPanelScript(apiPort: number): string {
     model.wallpaperVisible = this.checked;
     preview();
     pushConfig({ wallpaperVisible: this.checked });
+  });
+  $('zb-surface-color').addEventListener('input', function () {
+    model.surfaceColor = this.value.toUpperCase();
+    $('zb-surface-alpha').disabled = false;
+    pushConfig({ surfaceColor: model.surfaceColor, surfaceAlpha: Number($('zb-surface-alpha').value) });
+  });
+  $('zb-surface-alpha').addEventListener('input', function () {
+    model.surfaceAlpha = Number(this.value);
+    if (!model.surfaceColor) return; // no tint chosen yet — nothing to tune
+    pushConfig({ surfaceColor: model.surfaceColor, surfaceAlpha: model.surfaceAlpha });
+  });
+  $('zb-surface-reset').addEventListener('click', function () {
+    model.surfaceColor = '';
+    pushConfig({ surfaceColor: '' });
+    refresh();
   });
 
   var FITS = ['cover', 'contain', 'smart'];

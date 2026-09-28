@@ -31,6 +31,13 @@ export interface BeautifyConfig {
   sceneHash?: string;
   /** Serve API port used to derive sceneVideoUrl (default 9223). */
   apiPort?: number;
+  /**
+   * UI surface tint for cards / panels (the message bubble, todo card …):
+   * "#RRGGBB", or undefined / "" to follow the Monet-derived theme.
+   */
+  surfaceColor?: string;
+  /** Surface opacity percent (0-100) applied when surfaceColor is set. */
+  surfaceAlpha?: number;
 }
 
 export const DEFAULT_CONFIG: BeautifyConfig = {
@@ -79,6 +86,17 @@ export interface BuiltPayload {
 
 function filterOf(blur: number): string {
   return blur > 0 ? `blur(${blur}px)` : "none";
+}
+
+/** Parses "#RRGGBB" + percent into an rgb(r g b / a) tint; undefined = follow Monet. */
+function parseSurfaceTint(color?: string, alpha?: number): { r: number; g: number; b: number; a: number } | undefined {
+  if (!color || !/^#[0-9a-fA-F]{6}$/.test(color)) return undefined;
+  return {
+    r: parseInt(color.slice(1, 3), 16),
+    g: parseInt(color.slice(3, 5), 16),
+    b: parseInt(color.slice(5, 7), 16),
+    a: Math.min(0.95, Math.max(0.05, (alpha ?? 60) / 100)),
+  };
 }
 
 /**
@@ -179,6 +197,15 @@ html, body { background: transparent !important; }
     } else if (config.wallpaperVisible) {
       parts.push(buildTransparencyOverrides({ dim: config.dim }));
     }
+  }
+  // User surface tint: overrides the theme variables the card / panel surfaces
+  // consume (--color-panel, --color-card) on top of whatever Monet set.
+  const tint = parseSurfaceTint(config.surfaceColor, config.surfaceAlpha);
+  if (tint) {
+    parts.push(`:root, :host {
+  --color-panel: rgb(${tint.r} ${tint.g} ${tint.b} / ${tint.a});
+  --color-card: rgb(${tint.r} ${tint.g} ${tint.b} / ${tint.a});
+}`);
   }
   const wallpaperDataUri =
     config.sceneVideoUrl || !config.wallpaperVisible ? undefined : assets?.dataUri;
